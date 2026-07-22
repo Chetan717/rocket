@@ -11,6 +11,16 @@ const PAGE_LABELS = {
   projects:      "Projects",
   notifications: "Notifications",
   settings:      "Settings",
+  taskmanagement: "Task Management",
+  templates:     "Templates",
+  companies:     "Companies",
+  Graphics:      "App Graphics",
+  marketing:     "Marketing",
+  removebg:      "Remove Background API",
+  userdashboard: "Subscription Dashboard",
+  leads:         "User Leads",
+  templatedata:  "Template Data",
+  adminmanagement: "Admin Management",
   logout:        "Logout",
 };
 
@@ -38,7 +48,6 @@ export default function Layout({ children }) {
     <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-[#080b10]">
       <Sidebar
         collapsed={collapsed}
-        setCollapsed={setCollapsed}
         mobileOpen={mobileOpen}
         setMobileOpen={setMobileOpen}
         active={active}

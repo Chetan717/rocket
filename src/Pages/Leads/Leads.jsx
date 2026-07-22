@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { collection, getDocs, doc, setDoc, updateDoc, getDoc } from "firebase/firestore";
 import { db } from "../../../Firebase";
 import * as XLSX from "xlsx";
@@ -35,6 +35,10 @@ function fmt(val) {
   const d = toDate(val);
   if (!d) return "—";
   return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+function couponCodeOf(value) {
+  const code = String(value || "").trim();
+  return code ? code.toUpperCase() : "";
 }
 
 const STATUS_OPTIONS = ["New", "Hot", "Warm", "Cold", "Converted", "Lost", "Follow Up"];
@@ -117,6 +121,7 @@ function LeadPanel({ lead, onClose, onSave }) {
                 ["Company", lead.companyName || "—"],
                 ["Refer Code", lead.referCode || "—"],
                 ["Referred By", lead.referredBy || "—"],
+                ["Coupon Code", lead.couponCodes?.join(", ") || "—"],
                 ["Mktg. Member", lead.referredByMteam ? "✅ Assigned" : "—"],
                 ["Joined", fmt(lead.joinDate)],
               ].map(([k, v]) => (
@@ -300,6 +305,7 @@ export default function Leads() {
   const [filterExpiry,   setFilterExpiry]   = useState("all");
   const [filterStatus,   setFilterStatus]   = useState("all");
   const [filterCompany,  setFilterCompany]  = useState("all");
+  const [filterCoupon,   setFilterCoupon]   = useState("all");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo,   setFilterDateTo]   = useState("");
   const [search,         setSearch]         = useState("");
@@ -399,6 +405,17 @@ export default function Leads() {
 
       const isFullyExpired = hasAnySub && !hasActiveSub;
       const lm = leadMgmt[mobile] || {};
+      const couponCodes = new Set();
+      [u.mteamCouponCode, u.couponApplied, u.couponCode].forEach(value => {
+        const code = couponCodeOf(value);
+        if (code) couponCodes.add(code);
+      });
+      userSubs.forEach(s => {
+        [s.couponApplied, s.couponCode, s.coupon].forEach(value => {
+          const code = couponCodeOf(value);
+          if (code) couponCodes.add(code);
+        });
+      });
 
       return {
         _userId: u._id || null,
@@ -424,6 +441,7 @@ export default function Leads() {
         referredBy: u.referredBy || "",
         referredByMteam: u.referredByMteam || null,
         mteamCouponCode: u.mteamCouponCode || null,
+        couponCodes: Array.from(couponCodes),
       };
     };
 
@@ -452,6 +470,13 @@ export default function Leads() {
     return Array.from(names).sort();
   }, [leads]);
 
+  // Coupon values used by leads (assigned coupon or subscription coupon).
+  const couponOptions = useMemo(() => {
+    const codes = new Set();
+    leads.forEach(l => l.couponCodes?.forEach(code => codes.add(code)));
+    return Array.from(codes).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  }, [leads]);
+
   // ── Due reminders ────────────────────────────────────────
   const dueReminders = useMemo(() => {
     const todayStr = new Date().toISOString().slice(0, 10);
@@ -466,14 +491,14 @@ export default function Leads() {
   const dismissReminder = (mobile) => {
     const next = [...dismissedMobiles, mobile];
     setDismissedMobiles(next);
-    try { sessionStorage.setItem("dismissed_reminders", JSON.stringify(next)); } catch {}
+    try { sessionStorage.setItem("dismissed_reminders", JSON.stringify(next)); } catch { /* storage may be unavailable */ }
   };
 
   const dismissAll = () => {
     const mobiles = dueReminders.map(l => l.mobile);
     const next = [...new Set([...dismissedMobiles, ...mobiles])];
     setDismissedMobiles(next);
-    try { sessionStorage.setItem("dismissed_reminders", JSON.stringify(next)); } catch {}
+    try { sessionStorage.setItem("dismissed_reminders", JSON.stringify(next)); } catch { /* storage may be unavailable */ }
   };
 
   const overdueCount = dueReminders.filter(l => l.leadFollowup < new Date().toISOString().slice(0, 10)).length;
@@ -539,12 +564,17 @@ export default function Leads() {
     // Company filter
     if (filterCompany !== "all") rows = rows.filter(l => l.companyName === filterCompany);
 
+    if (filterCoupon === "none") rows = rows.filter(l => !l.couponCodes?.length);
+    else if (filterCoupon !== "all") rows = rows.filter(l => l.couponCodes?.includes(filterCoupon));
+
     const q = search.trim().toLowerCase();
     if (q) rows = rows.filter(l =>
       l.name?.toLowerCase().includes(q) ||
       l.mobile?.includes(q) ||
       l.companyName?.toLowerCase().includes(q) ||
-      l.referredBy?.toLowerCase().includes(q)
+      l.referCode?.toLowerCase().includes(q) ||
+      l.referredBy?.toLowerCase().includes(q) ||
+      l.couponCodes?.some(code => code.toLowerCase().includes(q))
     );
 
     // Newest leads (most recently joined) appear first; leads with no known
@@ -556,7 +586,7 @@ export default function Leads() {
     });
 
     return rows;
-  }, [dateFilteredLeads, statFilter, filterType, filterPlan, filterExpiry, filterStatus, filterCompany, search]);
+  }, [dateFilteredLeads, statFilter, filterType, filterPlan, filterExpiry, filterStatus, filterCompany, filterCoupon, search]);
 
   const totalPages  = Math.max(1, Math.ceil(filtered.length / pageSize));
   const currentPage = Math.min(page, totalPages);
@@ -567,7 +597,7 @@ export default function Leads() {
 
   const resetFilters = () => {
     setFilterType("all"); setFilterPlan("all"); setFilterExpiry("all");
-    setFilterStatus("all"); setFilterCompany("all"); setFilterDateFrom(""); setFilterDateTo("");
+    setFilterStatus("all"); setFilterCompany("all"); setFilterCoupon("all"); setFilterDateFrom(""); setFilterDateTo("");
     setSearch(""); setStatFilter("all"); setPage(1);
   };
 
@@ -646,6 +676,7 @@ export default function Leads() {
       "Designation":       l.designation,
       "Refer Code":        l.referCode || "—",
       "Referred By":       l.referredBy || "—",
+      "Coupon Code":       l.couponCodes?.join(", ") || "—",
       "Mktg Member":       l.referredByMteam ? "Yes" : "No",
       "Has Subscription":  l.hasAnySub ? "Yes" : "No",
       "Active Plan":       l.hasActiveSub ? "Yes" : "No",
@@ -667,7 +698,8 @@ export default function Leads() {
   };
 
   const hasActiveFilters = filterType !== "all" || filterPlan !== "all" || filterExpiry !== "all" ||
-    filterStatus !== "all" || filterCompany !== "all" || filterDateFrom || filterDateTo || search || statFilter !== "all";
+    filterStatus !== "all" || filterCompany !== "all" || filterCoupon !== "all" ||
+    filterDateFrom || filterDateTo || search || statFilter !== "all";
 
   const pageEligibleCount = pageSlice.filter(isAssignable).length;
   const allPageEligibleSelected = pageEligibleCount > 0 && pageSlice.filter(isAssignable).every(l => selectedUserIds.has(l._userId));
@@ -875,7 +907,7 @@ export default function Leads() {
           <button onClick={resetFilters} className="text-xs text-violet-600 font-semibold hover:text-violet-800">Reset all</button>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           {/* Profile filter */}
           <div className="flex flex-col gap-1">
             <label className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">MLM Profile</label>
@@ -928,12 +960,22 @@ export default function Leads() {
               {companyOptions.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
+          {/* Coupon filter */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Coupon Code</label>
+            <select value={filterCoupon} onChange={e => { setFilterCoupon(e.target.value); setPage(1); }}
+              className="text-sm border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-400">
+              <option value="all">All Coupons</option>
+              <option value="none">No Coupon</option>
+              {couponOptions.map(code => <option key={code} value={code}>{code}</option>)}
+            </select>
+          </div>
         </div>
 
         {/* Search */}
         <div className="relative">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"><IcoSearch /></span>
-          <input type="text" placeholder="Search by name, mobile, company or refer code…" value={search}
+          <input type="text" placeholder="Search by name, mobile, company, refer or coupon code…" value={search}
             onChange={e => { setSearch(e.target.value); setPage(1); }}
             className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-400" />
         </div>
@@ -985,14 +1027,14 @@ export default function Leads() {
                     <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">#</span>
                   </div>
                 </th>
-                {["User", "Created At", "Mobile", "Referred By", "MLM Profile", "Plan Status", "Plan", "Expiry", "Days Left", "Lead Status", "Follow-up", "Actions"].map(h => (
+                {["User", "Created At", "Mobile", "Referred By", "Coupon Code", "MLM Profile", "Plan Status", "Plan", "Expiry", "Days Left", "Lead Status", "Follow-up", "Actions"].map(h => (
                   <th key={h} className="px-3 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
               {pageSlice.length === 0
-                ? <tr><td colSpan={13} className="py-16 text-center text-gray-400 text-sm">No leads match your filters.</td></tr>
+                ? <tr><td colSpan={14} className="py-16 text-center text-gray-400 text-sm">No leads match your filters.</td></tr>
                 : pageSlice.map((lead, i) => {
                   const isExpanded = expandedRow === lead.mobile;
                   const days = lead.daysToExpiry;
@@ -1032,6 +1074,19 @@ export default function Leads() {
                               {lead.referredByMteam && (
                                 <span className="text-[10px] text-teal-600 font-semibold">Mktg. Member</span>
                               )}
+                            </div>
+                          ) : (
+                            <span className="text-gray-300 text-xs">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          {lead.couponCodes?.length ? (
+                            <div className="flex flex-col items-start gap-1">
+                              {lead.couponCodes.map(code => (
+                                <span key={code} className="font-mono text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-100 px-2 py-0.5 rounded-lg whitespace-nowrap">
+                                  {code}
+                                </span>
+                              ))}
                             </div>
                           ) : (
                             <span className="text-gray-300 text-xs">—</span>
@@ -1083,7 +1138,7 @@ export default function Leads() {
                       </tr>
                       {isExpanded && (
                         <tr key={lead.mobile + "_exp"} className="bg-violet-50/20">
-                          <td colSpan={13} className="px-6 py-3">
+                          <td colSpan={14} className="px-6 py-3">
                             <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-2">Subscription History ({lead.allSubs.length})</p>
                             <div className="flex flex-wrap gap-2">
                               {lead.allSubs.map((s, si) => (

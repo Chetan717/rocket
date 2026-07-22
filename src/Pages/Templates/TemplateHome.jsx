@@ -18,6 +18,23 @@ import QualityCheck from "./QualityCheck";
 import { getAdminSession } from "../../Utils/adminSession";
 import IssueFollowup from "./IssueFollowup";
 
+const TEMPLATE_FILTER_STORAGE_KEY = "mlmlive.admin.template-filters.v1";
+
+function readStoredFilters() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(TEMPLATE_FILTER_STORAGE_KEY) || "{}");
+    return {
+      activeTab: parsed.activeTab === "General" ? "General" : "MLM",
+      mlmFilterSelectType: typeof parsed.mlmFilterSelectType === "string" ? parsed.mlmFilterSelectType : "",
+      mlmFilterCompany: typeof parsed.mlmFilterCompany === "string" ? parsed.mlmFilterCompany : "",
+      generalFilterSelectType: typeof parsed.generalFilterSelectType === "string" ? parsed.generalFilterSelectType : "",
+      search: typeof parsed.search === "string" ? parsed.search : "",
+    };
+  } catch {
+    return { activeTab: "MLM", mlmFilterSelectType: "", mlmFilterCompany: "", generalFilterSelectType: "", search: "" };
+  }
+}
+
 // ── Permission helper ─────────────────────────────────────────────────────
 function getAdminUser() {
   return getAdminSession() || {};
@@ -56,6 +73,7 @@ function CountCard({ label, count, color }) {
 export default function TemplateHome() {
   const navigate = useNavigate();
   const admin    = getAdminUser();
+  const initialFilters = useMemo(() => readStoredFilters(), []);
 
   const canOperation   = hasPermission(admin, "templates_operation");
   const canQuality     = hasPermission(admin, "templates_quality");
@@ -71,19 +89,18 @@ export default function TemplateHome() {
   const [qualityLoading, setQualityLoading] = useState(false);
 
   // ── Active tab (MLM / General) — controls filters ────────────────────────
-  const [activeTab, setActiveTab] = useState("MLM");
+  const [activeTab, setActiveTab] = useState(initialFilters.activeTab);
 
   // ── Filters: separate per tab ────────────────────────────────────────────
-  const [mlmFilterSelectType,     setMlmFilterSelectType]     = useState("");
-  const [mlmFilterCompany,        setMlmFilterCompany]        = useState("");
-  const [generalFilterSelectType, setGeneralFilterSelectType] = useState("");
-  const [search,                  setSearch]                  = useState("");
+  const [mlmFilterSelectType,     setMlmFilterSelectType]     = useState(initialFilters.mlmFilterSelectType);
+  const [mlmFilterCompany,        setMlmFilterCompany]        = useState(initialFilters.mlmFilterCompany);
+  const [generalFilterSelectType, setGeneralFilterSelectType] = useState(initialFilters.generalFilterSelectType);
+  const [search,                  setSearch]                  = useState(initialFilters.search);
 
   // Current tab's filter values
   const filterSelectType = activeTab === "MLM" ? mlmFilterSelectType     : generalFilterSelectType;
   const filterCompany    = activeTab === "MLM" ? mlmFilterCompany        : "";
   const setFilterSelectType = activeTab === "MLM" ? setMlmFilterSelectType : setGeneralFilterSelectType;
-  const setFilterCompany    = setMlmFilterCompany;
 
   // ── Companies ─────────────────────────────────────────────────────────────
   const [companies,        setCompanies]        = useState([]);
@@ -92,6 +109,17 @@ export default function TemplateHome() {
   // ── Popup state ───────────────────────────────────────────────────────────
   const [selectedTemplate, setSelectedTemplate] = useState(null);
   const [qualityTemplate,  setQualityTemplate]  = useState(null);
+
+  // Keep dashboard state while Add/Edit/Copy pages temporarily unmount it.
+  useEffect(() => {
+    window.localStorage.setItem(TEMPLATE_FILTER_STORAGE_KEY, JSON.stringify({
+      activeTab,
+      mlmFilterSelectType,
+      mlmFilterCompany,
+      generalFilterSelectType,
+      search,
+    }));
+  }, [activeTab, mlmFilterSelectType, mlmFilterCompany, generalFilterSelectType, search]);
 
   // ── Fetch companies ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -244,12 +272,10 @@ export default function TemplateHome() {
 
   const handleSearch           = useCallback((e)   => setSearch(e.target.value), []);
   const handleFilterSelectType = useCallback((val) => { setFilterSelectType(val); }, [setFilterSelectType]);
-  const handleFilterCompany    = useCallback((val) => setFilterCompany(val), []);
+  const handleFilterCompany    = useCallback((val) => setMlmFilterCompany(val), []);
 
-  // Clear tab-specific filters when switching tabs
   const handleTabChange = useCallback((tab) => {
     setActiveTab(tab);
-    setSearch("");
   }, []);
 
   const handleSelect = useCallback((tpl) => setSelectedTemplate(tpl), []);

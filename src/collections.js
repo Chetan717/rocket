@@ -13,6 +13,7 @@ const COLLECTIONS = {
   PAYMENTLOG:     import.meta.env.VITE_COL_PAYMENTLOG,
   MUSIC:          import.meta.env.VITE_COL_MUSIC ?? "music",
   TEMPLATEQUALITY: import.meta.env.VITE_COL_TEMPLATEQUALITY ?? "templatequality",
+  TASKM:          import.meta.env.VITE_COL_TASKM ?? "Taskm",
 };
 
 export { COLLECTIONS };

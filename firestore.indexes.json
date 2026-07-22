@@ -4,7 +4,8 @@
     {"collectionGroup":"users","queryScope":"COLLECTION","fields":[{"fieldPath":"referredByMteam","order":"ASCENDING"},{"fieldPath":"mobileNo","order":"ASCENDING"}]},
     {"collectionGroup":"subscription","queryScope":"COLLECTION","fields":[{"fieldPath":"couponApplied","order":"ASCENDING"},{"fieldPath":"payment","order":"ASCENDING"}]},
     {"collectionGroup":"freshleads","queryScope":"COLLECTION","fields":[{"fieldPath":"mteamId","order":"ASCENDING"},{"fieldPath":"createdAt","order":"DESCENDING"}]},
-    {"collectionGroup":"freshleads","queryScope":"COLLECTION","fields":[{"fieldPath":"mteamId","order":"ASCENDING"},{"fieldPath":"mobileNo","order":"ASCENDING"}]}
+    {"collectionGroup":"freshleads","queryScope":"COLLECTION","fields":[{"fieldPath":"mteamId","order":"ASCENDING"},{"fieldPath":"mobileNo","order":"ASCENDING"}]},
+    {"collectionGroup":"Taskm","queryScope":"COLLECTION","fields":[{"fieldPath":"createdByMteamId","order":"ASCENDING"},{"fieldPath":"taskDate","order":"DESCENDING"}]}
   ],
   "fieldOverrides": []
 }

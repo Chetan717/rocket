@@ -20,6 +20,7 @@ import AdminManagement from "./Pages/AdminManagement/AdminManagement";
 import Leads from "./Pages/Leads/Leads";
 import TemplateData from "./Pages/Templates/TemplateData";
 import SecuritySessions from "./Pages/SecuritySessions";
+import TaskManagement from "./Pages/TaskManagement/TaskManagement";
 
 function App() {
   return (
@@ -63,6 +64,9 @@ function App() {
       <Route path="/adminmanagement"    element={<ProtectedRoute><Layout>
         <AdminManagement /></Layout></ProtectedRoute>} />
       <Route path="/security" element={<ProtectedRoute><Layout><SecuritySessions /></Layout></ProtectedRoute>} />
+
+      {/* Marketing-to-Admin Tasks */}
+      <Route path="/taskmanagement" element={<ProtectedRoute><Layout><TaskManagement /></Layout></ProtectedRoute>} />
 
       {/* ── Auth routes ── */}
       <Route path="/login"    element={<Login />} />

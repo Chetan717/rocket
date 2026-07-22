@@ -21,6 +21,7 @@ const ALL_TABS = [
   { id: "userdashboard",        label: "User Dashboard" },
   { id: "adminmanagement",      label: "Admin Management" },
   { id: "templatedata",         label: "Template Data Report" },
+  { id: "taskmanagement",       label: "Task Management" },
 ];
 
 const ROLES = ["Master Admin", "Admin", "Viewer", "Marketing", "Support"];
@@ -319,7 +320,7 @@ export default function AdminManagement() {
     } finally {
       setSaving(false);
     }
-  }, [modal]);
+  }, [modal, me.id, me.ownerAdminId]);
 
   const { requestDelete, DeleteAuthModal, BlockedToast } = useAdminDeleteGuard();
 

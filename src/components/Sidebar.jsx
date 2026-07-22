@@ -36,6 +36,12 @@ const ReportIcon = () => (
   </svg>
 );
 
+const TaskIcon = () => (
+  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5h11M9 12h11M9 19h11M4 5h.01M4 12h.01M4 19h.01" />
+  </svg>
+);
+
 // ── Template-related tab IDs that give access to /templates ────────────────
 const TEMPLATE_TAB_IDS = ["templates", "templates_operation", "templates_quality"];
 
@@ -52,6 +58,7 @@ const ALL_NAV_ITEMS = [
   { iconComponent: BarChartIcon, label: "Subscription Dashboard", id: "userdashboard", link: "/userdashboard" },
   { iconComponent: PersonIcon,   label: "User Leads",          id: "leads",           link: "/leads" },
   { iconComponent: ReportIcon,   label: "Template Data",       id: "templatedata",    link: "/templatedata" },
+  { iconComponent: TaskIcon,     label: "Task Management",     id: "taskmanagement", link: "/taskmanagement" },
   { iconComponent: ShieldIcon,   label: "Admin Management",    id: "adminmanagement", link: "/adminmanagement" },
 ];
 
@@ -78,7 +85,7 @@ function getVisibleNavItems(admin) {
 }
 
 export default function Sidebar({
-  collapsed, setCollapsed,
+  collapsed,
   mobileOpen, setMobileOpen,
   active, setActive,
 }) {

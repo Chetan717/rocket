@@ -41,15 +41,15 @@ export default function VideoUploadInput({
   disabled = false,
 }) {
   const fileRef = useRef(null);
+  const dragDepth = useRef(0);
   const [progress, setProgress] = useState(null);
   const [status, setStatus] = useState("idle");
   const [errMsg, setErrMsg] = useState("");
+  const [isDragging, setIsDragging] = useState(false);
 
-  const handleFile = useCallback(
-    async (e) => {
-      const file = e.target.files?.[0];
+  const uploadFile = useCallback(
+    async (file) => {
       if (!file) return;
-      e.target.value = "";
 
       if (!file.type.startsWith("video/")) {
         setErrMsg("Please select a video file.");
@@ -104,6 +104,42 @@ export default function VideoUploadInput({
     [storagePath, onChange]
   );
 
+  const handleFile = useCallback((e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    uploadFile(file);
+  }, [uploadFile]);
+
+  const handleDragEnter = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (disabled || status === "uploading") return;
+    dragDepth.current += 1;
+    setIsDragging(true);
+  }, [disabled, status]);
+
+  const handleDragOver = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = disabled ? "none" : "copy";
+  }, [disabled]);
+
+  const handleDragLeave = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setIsDragging(false);
+  }, []);
+
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepth.current = 0;
+    setIsDragging(false);
+    if (disabled || status === "uploading") return;
+    uploadFile(e.dataTransfer.files?.[0]);
+  }, [disabled, status, uploadFile]);
+
   const handleClear = useCallback(() => {
     onChange("");
     setStatus("idle");
@@ -113,7 +149,13 @@ export default function VideoUploadInput({
   const isUploading = status === "uploading";
 
   return (
-    <div className="flex flex-col gap-2">
+    <div
+      className="flex flex-col gap-2"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <div className="flex items-center gap-2">
         <input
           type="url"
@@ -175,6 +217,19 @@ export default function VideoUploadInput({
           </button>
         )}
       </div>
+
+      <button
+        type="button"
+        onClick={() => fileRef.current?.click()}
+        disabled={disabled || isUploading}
+        className={`w-full rounded-xl border-2 border-dashed px-4 py-3 text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+          isDragging
+            ? "border-violet-500 bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-300 scale-[1.01]"
+            : "border-gray-200 dark:border-gray-700 text-gray-400 hover:border-violet-300 hover:bg-violet-50/50 dark:hover:bg-violet-500/5"
+        }`}
+      >
+        {isDragging ? "Drop video to upload" : `Drag & drop video here, or click to browse (max ${MAX_DURATION_S}s)`}
+      </button>
 
       {isUploading && (
         <div className="flex items-center gap-2">

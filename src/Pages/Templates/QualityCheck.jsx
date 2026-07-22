@@ -5,17 +5,22 @@ import { COLLECTIONS } from "../../collections";
 
 const FLAGS = {
   ok:      { label: "OK",      color: "emerald", desc: "Perfect — no issue" },
+  checked: { label: "Checked", color: "blue",    desc: "Reviewed and checked" },
   issue:   { label: "Issue",   color: "red",     desc: "Has a problem" },
   working: { label: "Working", color: "amber",   desc: "Designer fixing it" },
 };
 
+const PAGE_SIZE = 10;
+
 const FLAG_STYLES = {
   ok:      "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/20",
+  checked: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/20",
   issue:   "bg-red-50    text-red-700    border-red-200    dark:bg-red-500/10    dark:text-red-400    dark:border-red-500/20",
   working: "bg-amber-50  text-amber-700  border-amber-200  dark:bg-amber-500/10  dark:text-amber-400  dark:border-amber-500/20",
 };
 const FLAG_DOT = {
   ok:      "bg-emerald-500",
+  checked: "bg-blue-500",
   issue:   "bg-red-500",
   working: "bg-amber-500",
 };
@@ -31,7 +36,7 @@ function FlagBadge({ flag }) {
 }
 
 // ── Single row ─────────────────────────────────────────────────────────────
-function QualityRow({ idx, stableKey, link, check, onChange }) {
+function QualityRow({ idx, stableKey, check, onChange }) {
   const flag = check?.flag || "ok";
   const note = check?.note || "";
 
@@ -55,7 +60,7 @@ function QualityRow({ idx, stableKey, link, check, onChange }) {
               className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-all ${
                 flag === f
                   ? `${FLAG_STYLES[f]} ring-2 ring-offset-1 ${
-                      f === "ok" ? "ring-emerald-400" : f === "issue" ? "ring-red-400" : "ring-amber-400"
+                      f === "ok" ? "ring-emerald-400" : f === "checked" ? "ring-blue-400" : f === "issue" ? "ring-red-400" : "ring-amber-400"
                     }`
                   : "bg-gray-50 dark:bg-gray-800 text-gray-400 border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700"
               }`}
@@ -98,7 +103,7 @@ function QualityRow({ idx, stableKey, link, check, onChange }) {
 function SummaryBar({ checks, links }) {
   const counts = useMemo(() => {
     const currentKeys = new Set(links.map((l, i) => `${i}:${l.id ?? i}`));
-    const c = { ok: 0, issue: 0, working: 0 };
+    const c = { ok: 0, checked: 0, issue: 0, working: 0 };
     let checked = 0;
     Object.entries(checks).forEach(([key, { flag }]) => {
       if (!currentKeys.has(key)) return;
@@ -123,7 +128,7 @@ function SummaryBar({ checks, links }) {
 
 // ── Main component ─────────────────────────────────────────────────────────
 export default function QualityCheck({ template, onClose }) {
-  const links      = template?.GraphicsLink || [];
+  const links      = useMemo(() => template?.GraphicsLink || [], [template?.GraphicsLink]);
   const templateId = template?.id;
 
   const [checks,  setChecks]  = useState({});
@@ -131,11 +136,13 @@ export default function QualityCheck({ template, onClose }) {
   const [saving,  setSaving]  = useState(false);
   const [saved,   setSaved]   = useState(false);
   const [error,   setError]   = useState(null);
+  const [page,    setPage]    = useState(1);
 
   useEffect(() => {
     if (!templateId) return;
     let cancelled = false;
     setChecks({});
+    setPage(1);
     setLoading(true);
     getDoc(doc(db, COLLECTIONS.TEMPLATEQUALITY, templateId))
       .then((snap) => {
@@ -145,6 +152,19 @@ export default function QualityCheck({ template, onClose }) {
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [templateId]);
+
+  const totalPages = Math.max(1, Math.ceil(links.length / PAGE_SIZE));
+  const pageLinks = useMemo(() => {
+    const start = (page - 1) * PAGE_SIZE;
+    return links.slice(start, start + PAGE_SIZE).map((link, offset) => ({
+      link,
+      idx: start + offset,
+    }));
+  }, [links, page]);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
 
   const handleChange = useCallback((stableKey, field, value) => {
     setChecks((prev) => ({
@@ -271,14 +291,13 @@ export default function QualityCheck({ template, onClose }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {links.map((link, idx) => {
+                    {pageLinks.map(({ link, idx }) => {
                       const stableKey = `${idx}:${link.id ?? idx}`;
                       return (
                         <QualityRow
                           key={stableKey}
                           idx={idx}
                           stableKey={stableKey}
-                          link={link}
                           check={checks[stableKey]}
                           onChange={handleChange}
                         />
@@ -287,6 +306,34 @@ export default function QualityCheck({ template, onClose }) {
                   </tbody>
                 </table>
               </div>
+              {totalPages > 1 && (
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-gray-100 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-800/30">
+                  <p className="text-xs text-gray-400">
+                    Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, links.length)} of {links.length}
+                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={page === 1}
+                      onClick={() => setPage((value) => Math.max(1, value - 1))}
+                      className="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-semibold text-gray-600 dark:text-gray-300 disabled:opacity-40"
+                    >
+                      Previous
+                    </button>
+                    <span className="px-3 text-xs font-semibold text-gray-500 dark:text-gray-400">
+                      Page {page} of {totalPages}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={page === totalPages}
+                      onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
+                      className="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-semibold text-gray-600 dark:text-gray-300 disabled:opacity-40"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
