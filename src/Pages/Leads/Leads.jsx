@@ -21,6 +21,8 @@ const IcoBell      = () => <Ico d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.1
 const IcoWarning   = () => <Ico d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" cls="w-5 h-5" />;
 const IcoUsers     = () => <Ico d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />;
 const IcoLink      = () => <Ico d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />;
+const IcoEye       = () => <Ico d="M2.25 12s3.75-6.75 9.75-6.75S21.75 12 21.75 12 18 18.75 12 18.75 2.25 12 2.25 12zM15 12a3 3 0 11-6 0 3 3 0 016 0z" />;
+const IcoEyeOff    = () => <Ico d="M3 3l18 18M10.585 10.586A2 2 0 0013.414 13.414M9.88 5.09A9.935 9.935 0 0112 4.86c6 0 9.75 7.14 9.75 7.14a15.78 15.78 0 01-2.12 3.01M6.61 6.61C3.83 8.29 2.25 12 2.25 12s3.75 7.14 9.75 7.14a9.8 9.8 0 004.02-.86" />;
 
 // ── Helpers ──────────────────────────────────────────────────
 function toDate(val) {
@@ -39,6 +41,28 @@ function fmt(val) {
 function couponCodeOf(value) {
   const code = String(value || "").trim();
   return code ? code.toUpperCase() : "";
+}
+
+function PasswordCell({ value, revealed, onToggle }) {
+  const password = typeof value === "string" ? value : "";
+  if (!password) return <span className="text-gray-300 text-xs">—</span>;
+
+  return (
+    <div className="flex items-center gap-1.5 min-w-[118px]">
+      <span className="font-mono text-xs text-gray-600 max-w-[130px] truncate" title={revealed ? password : "Password hidden"}>
+        {revealed ? password : "••••••••"}
+      </span>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg bg-gray-50 text-gray-500 hover:bg-violet-50 hover:text-violet-600 transition-colors"
+        title={revealed ? "Hide password" : "Show password"}
+        aria-label={revealed ? "Hide password" : "Show password"}
+      >
+        {revealed ? <IcoEyeOff /> : <IcoEye />}
+      </button>
+    </div>
+  );
 }
 
 const STATUS_OPTIONS = ["New", "Hot", "Warm", "Cold", "Converted", "Lost", "Follow Up"];
@@ -311,6 +335,7 @@ export default function Leads() {
   const [search,         setSearch]         = useState("");
   const [page,           setPage]           = useState(1);
   const [pageSize,       setPageSize]       = useState(20);
+  const [revealedPasswords, setRevealedPasswords] = useState(() => new Set());
   const [selectedLead,   setSelectedLead]   = useState(null);
   const [statFilter,     setStatFilter]     = useState("all");
   const [expandedRow,    setExpandedRow]    = useState(null);
@@ -442,6 +467,7 @@ export default function Leads() {
         referredByMteam: u.referredByMteam || null,
         mteamCouponCode: u.mteamCouponCode || null,
         couponCodes: Array.from(couponCodes),
+        password: typeof u.password === "string" ? u.password : "",
       };
     };
 
@@ -627,6 +653,16 @@ export default function Leads() {
   };
 
   const clearSelection = () => setSelectedUserIds(new Set());
+
+  const togglePassword = (lead) => {
+    const key = lead._userId || lead.mobile;
+    setRevealedPasswords(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   // ── Batch assign to mteam member ────────────────────────
   const handleAssignConfirm = async (mteamMember) => {
@@ -1027,20 +1063,22 @@ export default function Leads() {
                     <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">#</span>
                   </div>
                 </th>
-                {["User", "Created At", "Mobile", "Referred By", "Coupon Code", "MLM Profile", "Plan Status", "Plan", "Expiry", "Days Left", "Lead Status", "Follow-up", "Actions"].map(h => (
+                {["User", "Created At", "Mobile", "Password", "Referred By", "Coupon Code", "MLM Profile", "Plan Status", "Plan", "Expiry", "Days Left", "Lead Status", "Follow-up", "Actions"].map(h => (
                   <th key={h} className="px-3 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
               {pageSlice.length === 0
-                ? <tr><td colSpan={14} className="py-16 text-center text-gray-400 text-sm">No leads match your filters.</td></tr>
+                ? <tr><td colSpan={15} className="py-16 text-center text-gray-400 text-sm">No leads match your filters.</td></tr>
                 : pageSlice.map((lead, i) => {
                   const isExpanded = expandedRow === lead.mobile;
                   const days = lead.daysToExpiry;
                   const daysColor = days === null ? "" : days <= 1 ? "text-red-600 font-bold" : days <= 7 ? "text-orange-500 font-semibold" : days <= 15 ? "text-amber-500" : "text-emerald-600";
                   const eligible = isAssignable(lead);
                   const isChecked = lead._userId && selectedUserIds.has(lead._userId);
+                  const passwordKey = lead._userId || lead.mobile;
+                  const isPasswordRevealed = revealedPasswords.has(passwordKey);
                   return (
                     <>
                       <tr key={lead.mobile} className={`hover:bg-gray-50/80 transition-colors ${isExpanded ? "bg-violet-50/30" : ""} ${isChecked ? "bg-violet-50/50" : ""}`}>
@@ -1064,6 +1102,13 @@ export default function Leads() {
                         </td>
                         <td className="px-3 py-3 text-xs text-gray-600 whitespace-nowrap">{fmt(lead.joinDate)}</td>
                         <td className="px-3 py-3 font-mono text-xs text-gray-600">{lead.mobile}</td>
+                        <td className="px-3 py-3">
+                          <PasswordCell
+                            value={lead.password}
+                            revealed={isPasswordRevealed}
+                            onToggle={() => togglePassword(lead)}
+                          />
+                        </td>
                         {/* Referred By column */}
                         <td className="px-3 py-3">
                           {lead.referredBy ? (
@@ -1138,7 +1183,7 @@ export default function Leads() {
                       </tr>
                       {isExpanded && (
                         <tr key={lead.mobile + "_exp"} className="bg-violet-50/20">
-                          <td colSpan={14} className="px-6 py-3">
+                          <td colSpan={15} className="px-6 py-3">
                             <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-2">Subscription History ({lead.allSubs.length})</p>
                             <div className="flex flex-wrap gap-2">
                               {lead.allSubs.map((s, si) => (
