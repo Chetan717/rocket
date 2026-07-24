@@ -3,7 +3,7 @@ bhbhbjb
 Task Management uses the Firestore collection `Taskm` directly. No new Cloud Function is required.
 
 ## Required deployment
-
+huh
 Deploy the included Firestore rules and indexes after both panels are deployed:
 
 ```bash
