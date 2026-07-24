@@ -3,6 +3,13 @@ import { collection, getDocs } from "firebase/firestore";
 import * as XLSX from "xlsx";
 import { db } from "../../../Firebase";
 import { COLLECTIONS } from "../../collections";
+import {
+  getGraphicsStableKey,
+  getSubtypeQualityKey,
+  hasSelectedCurrentFlag,
+  isSubtypeQualityDoc,
+  normalizeQualityFlag,
+} from "./qualityUtils";
 
 // ── Icons ──────────────────────────────────────────────────────────────────
 function IconDownload() {
@@ -30,6 +37,7 @@ function Pill({ value, color = "gray" }) {
     emerald: "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400",
     sky:     "bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-400",
     amber:   "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400",
+    orange:  "bg-orange-50 text-orange-700 dark:bg-orange-500/10 dark:text-orange-400",
   };
   return (
     <span className={`inline-flex items-center justify-center px-2.5 py-0.5 rounded-full text-xs font-bold ${map[color]}`}>
@@ -38,11 +46,10 @@ function Pill({ value, color = "gray" }) {
   );
 }
 
-const QUALITY_FLAG_KEYS = ["ok", "checked", "issue", "working"];
-
 /**
- * Match the Quality Check modal exactly: every current graphics link gets one
- * status, and links without a saved flag use the modal's default "ok" status.
+ * Match the Quality Check modal exactly: graphics links only have OK or Issue.
+ * A link without either saved flag stays unselected; it is never counted as OK.
+ * Legacy Checked/Working records are normalized by normalizeQualityFlag().
  * Stale checks that belong to deleted graphics links are intentionally ignored.
  */
 function getTemplateQualityCounts(template, qualityDoc) {
@@ -53,24 +60,33 @@ function getTemplateQualityCounts(template, qualityDoc) {
   const counts = {
     graphics: links.length,
     ok: 0,
-    checked: 0,
     issues: 0,
-    working: 0,
-    hasQualityRecord: Boolean(qualityDoc),
+    unselected: 0,
   };
 
   links.forEach((link, index) => {
-    const stableKey = `${index}:${link?.id ?? index}`;
-    const savedFlag = typeof checks[stableKey]?.flag === "string"
-      ? checks[stableKey].flag.toLowerCase()
-      : "";
-    const flag = QUALITY_FLAG_KEYS.includes(savedFlag) ? savedFlag : "ok";
-
-    if (flag === "issue") counts.issues += 1;
-    else counts[flag] += 1;
+    const stableKey = getGraphicsStableKey(link, index);
+    const flag = normalizeQualityFlag(checks[stableKey]?.flag);
+    if (flag === "ok") counts.ok += 1;
+    else if (flag === "issue") counts.issues += 1;
+    else counts.unselected += 1;
   });
 
   return counts;
+}
+
+function SubtypeStatusBadge({ checked }) {
+  return checked ? (
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/20">
+      <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+      Checked
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-500/10 dark:text-orange-400 dark:border-orange-500/20">
+      <span className="w-1.5 h-1.5 rounded-full bg-orange-500" />
+      Unchecked
+    </span>
+  );
 }
 
 function PaginationBar({ page, total, onPage }) {
@@ -97,6 +113,7 @@ function QualityAnalyticsTable({
   onPage,
   pageSize,
   emptyMessage,
+  subtypeLevel = false,
 }) {
   return (
     <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm overflow-hidden">
@@ -104,7 +121,7 @@ function QualityAnalyticsTable({
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50 dark:bg-gray-800/60 border-b border-gray-100 dark:border-gray-800">
-              {["Sn", "Company", "Type", "Select Type", "Subtype", "Serial", "Graphics Links", "OK", "Checked", "Issue", "Working"].map(h => (
+              {["Sn", "Company", "Type", "Select Type", "Subtype", "Subtype Check", subtypeLevel ? "Templates" : "Serial", "Graphics Links", "OK", "Issue", "Not Selected"].map(h => (
                 <th key={h} className="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 whitespace-nowrap">{h}</th>
               ))}
             </tr>
@@ -113,7 +130,7 @@ function QualityAnalyticsTable({
             {rows.length === 0 ? (
               <tr><td colSpan={11} className="py-16 text-center text-sm text-gray-400">{emptyMessage}</td></tr>
             ) : rows.map((row, i) => (
-              <tr key={row.id} className={`hover:bg-gray-50/60 dark:hover:bg-gray-800/30 transition-colors ${row.Issues > 0 ? "bg-red-50/20 dark:bg-red-500/5" : ""}`}>
+              <tr key={row.id || row.QualityKey} className={`hover:bg-gray-50/60 dark:hover:bg-gray-800/30 transition-colors ${row.Issues > 0 ? "bg-red-50/20 dark:bg-red-500/5" : ""}`}>
                 <td className="px-4 py-3 text-[11px] text-gray-400">{(page - 1) * pageSize + i + 1}</td>
                 <td className="px-4 py-3 text-xs font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">{row.Company}</td>
                 <td className="px-4 py-3">
@@ -125,20 +142,20 @@ function QualityAnalyticsTable({
                 </td>
                 <td className="px-4 py-3 text-xs text-gray-600 dark:text-gray-400">{row.SelectType}</td>
                 <td className="px-4 py-3 text-xs text-gray-500">{row.Subtype}</td>
-                <td className="px-4 py-3 text-xs font-mono text-violet-600 dark:text-violet-400">#{row.Serial}</td>
+                <td className="px-4 py-3"><SubtypeStatusBadge checked={row.SubtypeChecked} /></td>
+                <td className="px-4 py-3">
+                  {subtypeLevel
+                    ? <Pill value={row.Total} color="gray" />
+                    : <span className="text-xs font-mono text-violet-600 dark:text-violet-400">#{row.Serial}</span>}
+                </td>
                 <td className="px-4 py-3"><Pill value={row.Graphics} color="violet" /></td>
                 <td className="px-4 py-3"><Pill value={row.OK} color="emerald" /></td>
-                <td className="px-4 py-3"><Pill value={row.Checked} color="blue" /></td>
                 <td className="px-4 py-3">
                   {row.Issues > 0
                     ? <Pill value={row.Issues} color="red" />
                     : <span className="text-[11px] text-gray-300 dark:text-gray-600">—</span>}
                 </td>
-                <td className="px-4 py-3">
-                  {row.Working > 0
-                    ? <Pill value={row.Working} color="amber" />
-                    : <span className="text-[11px] text-gray-300 dark:text-gray-600">—</span>}
-                </td>
+                <td className="px-4 py-3"><Pill value={row.Unselected} color="gray" /></td>
               </tr>
             ))}
           </tbody>
@@ -174,7 +191,7 @@ function cell(v, s) {
  * Build one worksheet for a group of templates (one company or "General")
  * Groups rows by SelectType → Subtype
  */
-function buildSheet(sheetTitle, templates, qualityMap) {
+function buildSheet(sheetTitle, templates, qualityMap, subtypeReviewMap) {
   // Group: { [selectType]: { [subtype]: template[] } }
   const groups = {};
   templates.forEach(t => {
@@ -191,29 +208,30 @@ function buildSheet(sheetTitle, templates, qualityMap) {
 
   // ── Row 0: Title ──────────────────────────────────────────────────────
   ws[XLSX.utils.encode_cell({ r, c: 0 })] = cell(sheetTitle, STYLE.title);
-  merges.push({ s: { r, c: 0 }, e: { r, c: 8 } });
+  merges.push({ s: { r, c: 0 }, e: { r, c: 9 } });
   r++;
 
   // ── Row 1: empty ─────────────────────────────────────────────────────
   r++;
 
   // ── Row 2: column group headers ───────────────────────────────────────
-  // MAIN TYPE | SUB TYPE | QUANTITY(merged 2) | SHOWCASE(merged 2) | DESIGN STATUS | APP PROBLEM | TEMPLATE PROBLEM
-  const h2 = ["MAIN TYPE", "SUB TYPE", "QUANTITY", "", "SHOWCASE", "", "DESIGN STATUS", "APP PROBLEM", "TEMPLATE PROBLEM"];
+  // MAIN TYPE | SUB TYPE | SUBTYPE CHECK | QUANTITY(merged 2) | SHOWCASE(merged 2) | DESIGN STATUS | APP PROBLEM | TEMPLATE PROBLEM
+  const h2 = ["MAIN TYPE", "SUB TYPE", "SUBTYPE CHECK", "QUANTITY", "", "SHOWCASE", "", "DESIGN STATUS", "APP PROBLEM", "TEMPLATE PROBLEM"];
   h2.forEach((v, c) => { if (v) ws[XLSX.utils.encode_cell({ r, c })] = cell(v, STYLE.header1); });
-  merges.push({ s: { r, c: 2 }, e: { r, c: 3 } }); // QUANTITY spans cols 2-3
-  merges.push({ s: { r, c: 4 }, e: { r, c: 5 } }); // SHOWCASE spans cols 4-5
+  merges.push({ s: { r, c: 3 }, e: { r, c: 4 } }); // QUANTITY spans cols 3-4
+  merges.push({ s: { r, c: 5 }, e: { r, c: 6 } }); // SHOWCASE spans cols 5-6
   r++;
 
   // ── Row 3: sub-headers ────────────────────────────────────────────────
-  const h3 = ["", "", "DATA", "UPLOAD", "MAIN", "FORM", "", "", ""];
+  const h3 = ["", "", "", "DATA", "UPLOAD", "MAIN", "FORM", "", "", ""];
   h3.forEach((v, c) => { ws[XLSX.utils.encode_cell({ r, c })] = cell(v || "", STYLE.header2); });
-  // Merge MAIN TYPE and SUB TYPE cells vertically (rows 2-3)
+  // Merge standalone header cells vertically (rows 2-3)
   merges.push({ s: { r: r - 1, c: 0 }, e: { r, c: 0 } }); // MAIN TYPE
   merges.push({ s: { r: r - 1, c: 1 }, e: { r, c: 1 } }); // SUB TYPE
-  merges.push({ s: { r: r - 1, c: 6 }, e: { r, c: 6 } }); // DESIGN STATUS
-  merges.push({ s: { r: r - 1, c: 7 }, e: { r, c: 7 } }); // APP PROBLEM
-  merges.push({ s: { r: r - 1, c: 8 }, e: { r, c: 8 } }); // TEMPLATE PROBLEM
+  merges.push({ s: { r: r - 1, c: 2 }, e: { r, c: 2 } }); // SUBTYPE CHECK
+  merges.push({ s: { r: r - 1, c: 7 }, e: { r, c: 7 } }); // DESIGN STATUS
+  merges.push({ s: { r: r - 1, c: 8 }, e: { r, c: 8 } }); // APP PROBLEM
+  merges.push({ s: { r: r - 1, c: 9 }, e: { r, c: 9 } }); // TEMPLATE PROBLEM
   r++;
 
   // ── Data rows ─────────────────────────────────────────────────────────
@@ -223,6 +241,7 @@ function buildSheet(sheetTitle, templates, qualityMap) {
     let firstST = true;
     subtypes.forEach(sub => {
       const items = groups[st][sub];
+      const subtypeChecked = Boolean(subtypeReviewMap[getSubtypeQualityKey(items[0])]);
 
       // Counts
       const dataQty   = items.length;
@@ -245,7 +264,9 @@ function buildSheet(sheetTitle, templates, qualityMap) {
         if (!q) return;
         Object.values(q.checks || {}).forEach(ch => {
           if (ch.flag === "working" && ch.note?.trim()) appProblems.push(ch.note.trim());
-          if (ch.flag === "issue"   && ch.note?.trim()) tplProblems.push(ch.note.trim());
+          if (normalizeQualityFlag(ch.flag) === "issue" && ch.flag !== "working" && ch.note?.trim()) {
+            tplProblems.push(ch.note.trim());
+          }
         });
       });
       const appText = [...new Set(appProblems)].join("\n") || "COMPLETE";
@@ -256,13 +277,14 @@ function buildSheet(sheetTitle, templates, qualityMap) {
 
       ws[XLSX.utils.encode_cell({ r, c: 0 })] = cell(firstST ? st : "", STYLE.dataLeft);
       ws[XLSX.utils.encode_cell({ r, c: 1 })] = cell(sub === "—" ? "" : sub, STYLE.dataLeft);
-      ws[XLSX.utils.encode_cell({ r, c: 2 })] = cell(dataQty,   STYLE.data);
-      ws[XLSX.utils.encode_cell({ r, c: 3 })] = cell(uploadQty || "", STYLE.data);
-      ws[XLSX.utils.encode_cell({ r, c: 4 })] = cell(hasMain ? "✔️" : "", STYLE.data);
-      ws[XLSX.utils.encode_cell({ r, c: 5 })] = cell(hasForm ? "✔️" : "", STYLE.data);
-      ws[XLSX.utils.encode_cell({ r, c: 6 })] = cell(designStatus, STYLE.data);
-      ws[XLSX.utils.encode_cell({ r, c: 7 })] = cell(appText,  hasAppWork  ? STYLE.workCell : STYLE.data);
-      ws[XLSX.utils.encode_cell({ r, c: 8 })] = cell(tplText, hasTplIssue ? STYLE.issueCell : STYLE.data);
+      ws[XLSX.utils.encode_cell({ r, c: 2 })] = cell(subtypeChecked ? "CHECKED" : "UNCHECKED", subtypeChecked ? STYLE.data : STYLE.workCell);
+      ws[XLSX.utils.encode_cell({ r, c: 3 })] = cell(dataQty,   STYLE.data);
+      ws[XLSX.utils.encode_cell({ r, c: 4 })] = cell(uploadQty || "", STYLE.data);
+      ws[XLSX.utils.encode_cell({ r, c: 5 })] = cell(hasMain ? "✔️" : "", STYLE.data);
+      ws[XLSX.utils.encode_cell({ r, c: 6 })] = cell(hasForm ? "✔️" : "", STYLE.data);
+      ws[XLSX.utils.encode_cell({ r, c: 7 })] = cell(designStatus, STYLE.data);
+      ws[XLSX.utils.encode_cell({ r, c: 8 })] = cell(appText,  hasAppWork  ? STYLE.workCell : STYLE.data);
+      ws[XLSX.utils.encode_cell({ r, c: 9 })] = cell(tplText, hasTplIssue ? STYLE.issueCell : STYLE.data);
 
       firstST = false;
       r++;
@@ -272,16 +294,17 @@ function buildSheet(sheetTitle, templates, qualityMap) {
   if (r === 4) {
     // No data rows
     ws[XLSX.utils.encode_cell({ r, c: 0 })] = cell("No data", STYLE.data);
-    for (let c = 1; c < 9; c++) ws[XLSX.utils.encode_cell({ r, c })] = cell("", STYLE.data);
-    merges.push({ s: { r, c: 0 }, e: { r, c: 8 } });
+    for (let c = 1; c < 10; c++) ws[XLSX.utils.encode_cell({ r, c })] = cell("", STYLE.data);
+    merges.push({ s: { r, c: 0 }, e: { r, c: 9 } });
     r++;
   }
 
-  ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: r - 1, c: 8 } });
+  ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: r - 1, c: 9 } });
   ws["!merges"] = merges;
   ws["!cols"] = [
     { wch: 22 }, // MAIN TYPE
     { wch: 28 }, // SUB TYPE
+    { wch: 16 }, // SUBTYPE CHECK
     { wch: 8  }, // DATA
     { wch: 8  }, // UPLOAD
     { wch: 8  }, // MAIN
@@ -303,9 +326,11 @@ function buildSheet(sheetTitle, templates, qualityMap) {
 /**
  * Generate and download the full multi-sheet workbook
  */
-function generateWorkbook(allTemplates, companies, qualityDocs, filterCompany) {
+function generateWorkbook(allTemplates, companies, qualityDocs, filterCompany, subtypeReviewMap) {
   const qualityMap = {};
-  qualityDocs.forEach(q => { qualityMap[q.id] = q; });
+  qualityDocs.forEach(q => {
+    if (!isSubtypeQualityDoc(q)) qualityMap[q.id] = q;
+  });
 
   const companiesMap = {};
   companies.forEach(c => { companiesMap[c.id] = c.name; });
@@ -319,7 +344,7 @@ function generateWorkbook(allTemplates, companies, qualityDocs, filterCompany) {
   // ── GENERAL sheet ──────────────────────────────────────────────────────
   const generalTemplates = templates.filter(t => t.MainType !== "MLM");
   if (generalTemplates.length > 0) {
-    const ws = buildSheet("GENERAL TEMPLATE", generalTemplates, qualityMap);
+    const ws = buildSheet("GENERAL TEMPLATE", generalTemplates, qualityMap, subtypeReviewMap);
     XLSX.utils.book_append_sheet(wb, ws, "GENERAL");
   }
 
@@ -344,7 +369,7 @@ function generateWorkbook(allTemplates, companies, qualityDocs, filterCompany) {
   sortedCompanyIds.forEach(cid => {
     const compName  = (companiesMap[cid] || cid).toUpperCase();
     const sheetName = compName.slice(0, 31).replace(/[:\\/?*[\]]/g, "_");
-    const ws = buildSheet(`MLM   ${compName}`, byCompany[cid], qualityMap);
+    const ws = buildSheet(`MLM   ${compName}`, byCompany[cid], qualityMap, subtypeReviewMap);
     XLSX.utils.book_append_sheet(wb, ws, sheetName);
   });
 
@@ -395,9 +420,39 @@ export default function TemplateData() {
 
   const qualityDocMap = useMemo(() => {
     const m = {};
-    qualityDocs.forEach(q => { m[q.id] = q; });
+    qualityDocs.forEach(q => {
+      if (!isSubtypeQualityDoc(q)) m[q.id] = q;
+    });
     return m;
   }, [qualityDocs]);
+
+  /**
+   * One status per MainType + Company + SelectType + Subtype.
+   * Explicit subtype records win. For old data, an existing selected flag
+   * infers Checked until an admin explicitly saves Checked/Unchecked.
+   */
+  const subtypeReviewMap = useMemo(() => {
+    const explicit = {};
+    qualityDocs.forEach(q => {
+      if (!isSubtypeQualityDoc(q)) return;
+      const key = q.subtypeKey || getSubtypeQualityKey({
+        MainType: q.mainType,
+        Company: q.companyId,
+        SelectType: q.selectType,
+        Subtype: q.subtype,
+      });
+      if (typeof q.checked === "boolean") explicit[key] = q.checked;
+    });
+
+    const inferred = {};
+    allTemplates.forEach(template => {
+      const key = getSubtypeQualityKey(template);
+      if (Object.prototype.hasOwnProperty.call(explicit, key)) return;
+      if (hasSelectedCurrentFlag(template, qualityDocMap[template.id])) inferred[key] = true;
+    });
+
+    return { ...inferred, ...explicit };
+  }, [allTemplates, qualityDocs, qualityDocMap]);
 
   const qualityStatusMap = useMemo(() => {
     const m = {};
@@ -422,12 +477,14 @@ export default function TemplateData() {
       const selType  = (t.SelectType || "Unknown").replace(/_/g, " ");
       const subtype  = t.Subtype   || "—";
       const company  = companiesMap[t.Company] || t.Company || "—";
-      const key      = `${mainType}||${company}||${selType}||${subtype}`;
+      const qualityKey = getSubtypeQualityKey(t);
+      const key = qualityKey;
       if (!grouped[key]) grouped[key] = {
         MainType: mainType, Company: mainType === "MLM" ? company : "—",
-        SelectType: selType, Subtype: subtype,
+        SelectType: selType, Subtype: subtype, QualityKey: qualityKey,
+        SubtypeChecked: Boolean(subtypeReviewMap[qualityKey]),
         Total: 0, Active: 0, Launched: 0, Graphics: 0,
-        OK: 0, Checked: 0, Issues: 0, Working: 0,
+        OK: 0, Issues: 0, Unselected: 0,
       };
       const quality = qualityStatusMap[t.id] || getTemplateQualityCounts(t);
       grouped[key].Total++;
@@ -435,9 +492,8 @@ export default function TemplateData() {
       if (t.Launched)  grouped[key].Launched++;
       grouped[key].Graphics += quality.graphics;
       grouped[key].OK       += quality.ok;
-      grouped[key].Checked  += quality.checked;
       grouped[key].Issues   += quality.issues;
-      grouped[key].Working  += quality.working;
+      grouped[key].Unselected += quality.unselected;
     });
     return Object.values(grouped).sort((a, b) =>
       a.MainType.localeCompare(b.MainType) ||
@@ -445,12 +501,11 @@ export default function TemplateData() {
       a.SelectType.localeCompare(b.SelectType) ||
       a.Subtype.localeCompare(b.Subtype)
     );
-  }, [filteredTemplates, qualityStatusMap, companiesMap]);
+  }, [filteredTemplates, qualityStatusMap, companiesMap, subtypeReviewMap]);
 
   // ── Per-template quality analytics ────────────────────────────────────
-  const checkedTemplateReport = useMemo(() => {
+  const templateQualityRows = useMemo(() => {
     return filteredTemplates
-      .filter(t => qualityStatusMap[t.id]?.hasQualityRecord)
       .map(t => {
         const q = qualityStatusMap[t.id] || {};
         return {
@@ -459,20 +514,37 @@ export default function TemplateData() {
           MainType:   t.MainType   || "—",
           SelectType: (t.SelectType || "—").replace(/_/g, " "),
           Subtype:    t.Subtype    || "—",
+          QualityKey: getSubtypeQualityKey(t),
+          SubtypeChecked: Boolean(subtypeReviewMap[getSubtypeQualityKey(t)]),
           Serial:     t.serial     ?? "—",
           Graphics:   q.graphics || 0,
           OK:          q.ok || 0,
-          Checked:     q.checked || 0,
           Issues:      q.issues || 0,
-          Working:     q.working || 0,
+          Unselected:  q.unselected || 0,
         };
       })
-      .sort((a, b) => (b.Issues - a.Issues) || a.Company.localeCompare(b.Company));
-  }, [filteredTemplates, qualityStatusMap, companiesMap]);
+      .sort((a, b) => a.Company.localeCompare(b.Company) || String(a.Serial).localeCompare(String(b.Serial)));
+  }, [filteredTemplates, qualityStatusMap, companiesMap, subtypeReviewMap]);
+
+  const checkedSubtypeReport = useMemo(
+    () => templateReport
+      .filter(row => row.SubtypeChecked)
+      .sort((a, b) => (b.Issues - a.Issues) || a.Company.localeCompare(b.Company)),
+    [templateReport],
+  );
+
+  const uncheckedSubtypeReport = useMemo(
+    () => templateReport
+      .filter(row => !row.SubtypeChecked)
+      .sort((a, b) => (b.Unselected - a.Unselected) || a.Company.localeCompare(b.Company)),
+    [templateReport],
+  );
 
   const issueTemplateReport = useMemo(
-    () => checkedTemplateReport.filter(row => row.Issues > 0),
-    [checkedTemplateReport],
+    () => templateQualityRows
+      .filter(row => row.Issues > 0)
+      .sort((a, b) => (b.Issues - a.Issues) || a.Company.localeCompare(b.Company)),
+    [templateQualityRows],
   );
 
   // ── Summary stats ─────────────────────────────────────────────────────
@@ -484,12 +556,12 @@ export default function TemplateData() {
       active: 0,
       launched: 0,
       graphics: 0,
-      checkedTemplates: 0,
+      checkedSubtypes: checkedSubtypeReport.length,
+      uncheckedSubtypes: uncheckedSubtypeReport.length,
       issueTemplates: 0,
       ok: 0,
-      checked: 0,
       issues: 0,
-      working: 0,
+      unselected: 0,
     };
 
     filteredTemplates.forEach(template => {
@@ -498,17 +570,15 @@ export default function TemplateData() {
       else totals.general += 1;
       if (template.Active) totals.active += 1;
       if (template.Launched) totals.launched += 1;
-      if (quality.hasQualityRecord) totals.checkedTemplates += 1;
       if (quality.issues > 0) totals.issueTemplates += 1;
       totals.graphics += quality.graphics;
       totals.ok += quality.ok;
-      totals.checked += quality.checked;
       totals.issues += quality.issues;
-      totals.working += quality.working;
+      totals.unselected += quality.unselected;
     });
 
     return totals;
-  }, [filteredTemplates, qualityStatusMap]);
+  }, [filteredTemplates, qualityStatusMap, checkedSubtypeReport, uncheckedSubtypeReport]);
 
   // ── Download handlers ─────────────────────────────────────────────────
   const downloadWorkbook = useCallback(() => {
@@ -517,19 +587,23 @@ export default function TemplateData() {
       companies,
       qualityDocs,
       filterCompany,
+      subtypeReviewMap,
     );
-  }, [allTemplates, companies, qualityDocs, filterCompany, filterType]);
+  }, [allTemplates, companies, qualityDocs, filterCompany, filterType, subtypeReviewMap]);
 
   // ── Pagination ────────────────────────────────────────────────────────
   const PAGE = 50;
   const [tPage, setTPage] = useState(1);
   const [cPage, setCPage] = useState(1);
+  const [uPage, setUPage] = useState(1);
   const [iPage, setIPage] = useState(1);
   const tPages = Math.max(1, Math.ceil(templateReport.length / PAGE));
-  const cPages = Math.max(1, Math.ceil(checkedTemplateReport.length / PAGE));
+  const cPages = Math.max(1, Math.ceil(checkedSubtypeReport.length / PAGE));
+  const uPages = Math.max(1, Math.ceil(uncheckedSubtypeReport.length / PAGE));
   const iPages = Math.max(1, Math.ceil(issueTemplateReport.length / PAGE));
   const paginatedT = useMemo(() => templateReport.slice((tPage - 1) * PAGE, tPage * PAGE), [templateReport, tPage]);
-  const paginatedC = useMemo(() => checkedTemplateReport.slice((cPage - 1) * PAGE, cPage * PAGE), [checkedTemplateReport, cPage]);
+  const paginatedC = useMemo(() => checkedSubtypeReport.slice((cPage - 1) * PAGE, cPage * PAGE), [checkedSubtypeReport, cPage]);
+  const paginatedU = useMemo(() => uncheckedSubtypeReport.slice((uPage - 1) * PAGE, uPage * PAGE), [uncheckedSubtypeReport, uPage]);
   const paginatedI = useMemo(() => issueTemplateReport.slice((iPage - 1) * PAGE, iPage * PAGE), [issueTemplateReport, iPage]);
 
   useEffect(() => {
@@ -538,6 +612,9 @@ export default function TemplateData() {
   useEffect(() => {
     if (cPage > cPages) setCPage(cPages);
   }, [cPage, cPages]);
+  useEffect(() => {
+    if (uPage > uPages) setUPage(uPages);
+  }, [uPage, uPages]);
   useEffect(() => {
     if (iPage > iPages) setIPage(iPages);
   }, [iPage, iPages]);
@@ -589,14 +666,14 @@ export default function TemplateData() {
             })}
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-3">
             {[
-              { label: "Checked Templates", value: summary.checkedTemplates, color: "violet"  },
+              { label: "Checked Subtypes",  value: summary.checkedSubtypes,  color: "blue"    },
+              { label: "Unchecked Subtypes", value: summary.uncheckedSubtypes, color: "orange" },
               { label: "Issue Templates",   value: summary.issueTemplates,   color: summary.issueTemplates > 0 ? "red" : "gray" },
               { label: "OK",                value: summary.ok,               color: "emerald" },
-              { label: "Checked",           value: summary.checked,          color: "blue"    },
               { label: "Issue",             value: summary.issues,           color: summary.issues > 0 ? "red" : "gray" },
-              { label: "Working",           value: summary.working,          color: "amber"   },
+              { label: "Not Selected",      value: summary.unselected,       color: "gray"    },
             ].map(({ label, value, color }) => {
               const styles = {
                 gray:    "bg-gray-50 dark:bg-gray-800/60 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300",
@@ -605,6 +682,7 @@ export default function TemplateData() {
                 blue:    "bg-blue-50 dark:bg-blue-500/10 border-blue-100 dark:border-blue-500/20 text-blue-700 dark:text-blue-400",
                 red:     "bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20 text-red-700 dark:text-red-400",
                 amber:   "bg-amber-50 dark:bg-amber-500/10 border-amber-100 dark:border-amber-500/20 text-amber-700 dark:text-amber-400",
+                orange:  "bg-orange-50 dark:bg-orange-500/10 border-orange-100 dark:border-orange-500/20 text-orange-700 dark:text-orange-400",
               };
               return (
                 <div key={label} className={`flex flex-col items-center justify-center px-4 py-4 rounded-2xl border ${styles[color]}`}>
@@ -616,28 +694,28 @@ export default function TemplateData() {
           </div>
 
           <p className="text-xs text-gray-400 dark:text-gray-500">
-            Quality totals follow the Quality Check screen: every graphics link is counted once; a link without a saved flag is counted as OK.
+            Graphics Links use only OK or Issue. Links without a selected flag stay Not Selected. Checked/Unchecked is tracked once for the complete subtype.
           </p>
         </div>
       )}
 
       {/* Filters + Download */}
       <div className="flex flex-wrap gap-3 items-center">
-        <select value={filterType} onChange={e => { setFilterType(e.target.value); setTPage(1); setCPage(1); setIPage(1); }}
+        <select value={filterType} onChange={e => { setFilterType(e.target.value); setTPage(1); setCPage(1); setUPage(1); setIPage(1); }}
           className="pl-4 pr-9 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-400/30 appearance-none cursor-pointer">
           <option value="">All Types</option>
           <option value="MLM">MLM Only</option>
           <option value="General">General Only</option>
         </select>
 
-        <select value={filterCompany} onChange={e => { setFilterCompany(e.target.value); setTPage(1); setCPage(1); setIPage(1); }}
+        <select value={filterCompany} onChange={e => { setFilterCompany(e.target.value); setTPage(1); setCPage(1); setUPage(1); setIPage(1); }}
           className="pl-4 pr-9 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-400/30 appearance-none cursor-pointer">
           <option value="">All Companies</option>
           {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
 
         {(filterType || filterCompany) && (
-          <button onClick={() => { setFilterType(""); setFilterCompany(""); setTPage(1); setCPage(1); setIPage(1); }}
+          <button onClick={() => { setFilterType(""); setFilterCompany(""); setTPage(1); setCPage(1); setUPage(1); setIPage(1); }}
             className="px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
             Clear ×
           </button>
@@ -668,7 +746,7 @@ export default function TemplateData() {
               : "bg-sky-50 text-sky-700 border-sky-100 dark:bg-sky-500/10 dark:text-sky-400 dark:border-sky-500/20"
           }`}>{b.label}</span>
         ))}
-        <span className="text-xs text-gray-400">· Columns: MAIN TYPE · SUB TYPE · QUANTITY (DATA/UPLOAD) · SHOWCASE (MAIN/FORM) · DESIGN STATUS · APP PROBLEM · TEMPLATE PROBLEM</span>
+        <span className="text-xs text-gray-400">· Columns: MAIN TYPE · SUB TYPE · SUBTYPE CHECK · QUANTITY (DATA/UPLOAD) · SHOWCASE (MAIN/FORM) · DESIGN STATUS · APP PROBLEM · TEMPLATE PROBLEM</span>
       </div>
 
       {loading && (
@@ -680,10 +758,11 @@ export default function TemplateData() {
       {!loading && (
         <>
           {/* Sub-tabs */}
-          <div className="flex items-center gap-2 p-1 bg-gray-100 dark:bg-gray-800 rounded-2xl w-fit">
+          <div className="flex flex-wrap items-center gap-2 p-1 bg-gray-100 dark:bg-gray-800 rounded-2xl w-fit max-w-full">
             {[
               { id: "template", label: `Template Breakdown (${templateReport.length})` },
-              { id: "checked",  label: `Checked Templates (${checkedTemplateReport.length})` },
+              { id: "checked",  label: `Checked Subtypes (${checkedSubtypeReport.length})` },
+              { id: "unchecked", label: `Unchecked Subtypes (${uncheckedSubtypeReport.length})` },
               { id: "issues",   label: `Issue Templates (${issueTemplateReport.length})` },
             ].map(tab => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)}
@@ -704,7 +783,7 @@ export default function TemplateData() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-gray-50 dark:bg-gray-800/60 border-b border-gray-100 dark:border-gray-800">
-                      {["Sn", "Type", "Company", "Select Type", "Subtype", "Templates", "Graphics Links", "OK", "Checked", "Issue", "Working"].map(h => (
+                      {["Sn", "Type", "Company", "Select Type", "Subtype", "Subtype Check", "Templates", "Graphics Links", "OK", "Issue", "Not Selected"].map(h => (
                         <th key={h} className="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
@@ -726,20 +805,16 @@ export default function TemplateData() {
                         <td className="px-4 py-3 text-xs text-gray-600 dark:text-gray-400">{row.Company}</td>
                         <td className="px-4 py-3 text-xs font-medium text-gray-700 dark:text-gray-300">{row.SelectType}</td>
                         <td className="px-4 py-3 text-xs text-gray-500">{row.Subtype}</td>
+                        <td className="px-4 py-3"><SubtypeStatusBadge checked={row.SubtypeChecked} /></td>
                         <td className="px-4 py-3"><Pill value={row.Total}    color="gray"   /></td>
                         <td className="px-4 py-3"><Pill value={row.Graphics} color="violet" /></td>
                         <td className="px-4 py-3"><Pill value={row.OK} color="emerald" /></td>
-                        <td className="px-4 py-3"><Pill value={row.Checked} color="blue" /></td>
                         <td className="px-4 py-3">
                           {row.Issues > 0
                             ? <Pill value={row.Issues} color="red" />
                             : <span className="text-[11px] text-gray-300 dark:text-gray-600">—</span>}
                         </td>
-                        <td className="px-4 py-3">
-                          {row.Working > 0
-                            ? <Pill value={row.Working} color="amber" />
-                            : <span className="text-[11px] text-gray-300 dark:text-gray-600">—</span>}
-                        </td>
+                        <td className="px-4 py-3"><Pill value={row.Unselected} color="gray" /></td>
                       </tr>
                     ))}
                   </tbody>
@@ -749,7 +824,7 @@ export default function TemplateData() {
             </div>
           )}
 
-          {/* ── Checked Templates ── */}
+          {/* ── Checked Subtypes ── */}
           {activeTab === "checked" && (
             <QualityAnalyticsTable
               rows={paginatedC}
@@ -757,7 +832,21 @@ export default function TemplateData() {
               totalPages={cPages}
               onPage={setCPage}
               pageSize={PAGE}
-              emptyMessage="No checked template data found."
+              emptyMessage="No checked subtypes found."
+              subtypeLevel
+            />
+          )}
+
+          {/* ── Unchecked Subtypes ── */}
+          {activeTab === "unchecked" && (
+            <QualityAnalyticsTable
+              rows={paginatedU}
+              page={uPage}
+              totalPages={uPages}
+              onPage={setUPage}
+              pageSize={PAGE}
+              emptyMessage="No unchecked subtypes found."
+              subtypeLevel
             />
           )}
 

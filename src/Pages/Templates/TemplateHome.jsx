@@ -15,6 +15,7 @@ import { COLLECTIONS } from "../../collections";
 import TemplateTable from "./TemplateTable";
 import TemplateDetailPopup from "./TemplateDetailPopup";
 import QualityCheck from "./QualityCheck";
+import { isSubtypeQualityDoc, normalizeQualityFlag } from "./qualityUtils";
 import { getAdminSession } from "../../Utils/adminSession";
 import IssueFollowup from "./IssueFollowup";
 
@@ -184,8 +185,9 @@ export default function TemplateHome() {
   const issueCountMap = useMemo(() => {
     const m = {};
     qualityDocs.forEach(qDoc => {
+      if (isSubtypeQualityDoc(qDoc)) return;
       const checks = qDoc.checks || {};
-      const count  = Object.values(checks).filter(v => v.flag === "issue").length;
+      const count  = Object.values(checks).filter(v => normalizeQualityFlag(v.flag) === "issue").length;
       if (count > 0) m[qDoc.id] = count;
     });
     return m;
@@ -198,10 +200,11 @@ export default function TemplateHome() {
     allTemplates.forEach((t) => { templateMap[t.id] = t; });
     const items = [];
     qualityDocs.forEach((qDoc) => {
+      if (isSubtypeQualityDoc(qDoc)) return;
       const template = templateMap[qDoc.id];
       if (!template) return;
       const checks = qDoc.checks || {};
-      const issueEntries = Object.entries(checks).filter(([, v]) => v.flag === "issue");
+      const issueEntries = Object.entries(checks).filter(([, v]) => normalizeQualityFlag(v.flag) === "issue");
       if (issueEntries.length === 0) return;
       items.push({
         template,

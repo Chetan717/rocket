@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import {
   collection, doc, getDoc, getDocs, updateDoc, deleteDoc,
-  setDoc, serverTimestamp,
+  serverTimestamp, writeBatch,
 } from "firebase/firestore";
 import { db } from "../../../../Firebase";
 import {
@@ -24,6 +24,12 @@ import {
   getSelectTypes,
   uid,
 } from "../Constant";
+import {
+  getSubtypeQualityDocId,
+  getSubtypeQualityKey,
+  normalizeQualityChecks,
+  normalizeQualityFlag,
+} from "../qualityUtils";
 
 // ── Small helper components ────────────────────────────────────────────────
 function TextField({ label, value, onChange, placeholder, required, type = "text" }) {
@@ -199,7 +205,7 @@ export default function EditTemplate() {
   // Issue-flagged stableKeys
   const issueKeys = useMemo(() => {
     return Object.entries(qualityChecks)
-      .filter(([, v]) => v.flag === "issue")
+      .filter(([, v]) => normalizeQualityFlag(v.flag) === "issue")
       .map(([k]) => k);
   }, [qualityChecks]);
 
@@ -303,9 +309,16 @@ export default function EditTemplate() {
     setSaveLoading(true);
     setError(null);
     try {
-      const cleanGraphics = formData.GraphicsLink.map(({ _key, ...rest }) => ({
-        ...rest, id: Number(rest.id) || 0, bannerId: rest.bannerId || "", incmNameId: Number(rest.incmNameId) || 0,
-      }));
+      const cleanGraphics = formData.GraphicsLink.map((item) => {
+        const rest = { ...item };
+        delete rest._key;
+        return {
+          ...rest,
+          id: Number(rest.id) || 0,
+          bannerId: rest.bannerId || "",
+          incmNameId: Number(rest.incmNameId) || 0,
+        };
+      });
       await updateDoc(doc(db, "mlmtemplate", id), {
         ...formData, serial: Number(formData.serial) || 0, GraphicsLink: cleanGraphics, updatedAt: serverTimestamp(),
       });
@@ -320,21 +333,36 @@ export default function EditTemplate() {
   }, [id, navigate]);
 
   // ── Save quality check (mark all issues as OK or keep) ────────────────────
-  const saveQualityStatus = useCallback(async (choice) => {
+  const saveQualityStatus = useCallback(async (choice, formData) => {
     if (!id || issueCount === 0) return;
     try {
-      let updatedChecks = { ...qualityChecks };
+      let updatedChecks = normalizeQualityChecks(qualityChecks);
       if (choice === "resolved") {
         // Mark all "issue" flags as "ok"
         issueKeys.forEach(k => {
           updatedChecks[k] = { ...updatedChecks[k], flag: "ok" };
         });
       }
-      await setDoc(doc(db, COLLECTIONS.TEMPLATEQUALITY, id), {
+      const subtypeKey = getSubtypeQualityKey(formData);
+      const subtypeDocId = getSubtypeQualityDocId(subtypeKey);
+      const batch = writeBatch(db);
+      batch.set(doc(db, COLLECTIONS.TEMPLATEQUALITY, id), {
         templateId: id,
+        recordType: "template",
         checks: updatedChecks,
         updatedAt: serverTimestamp(),
       });
+      batch.set(doc(db, COLLECTIONS.TEMPLATEQUALITY, subtypeDocId), {
+        recordType: "subtype",
+        subtypeKey,
+        mainType: formData?.MainType || "",
+        companyId: formData?.MainType === "MLM" ? (formData?.Company || "") : "",
+        selectType: formData?.SelectType || "",
+        subtype: formData?.Subtype || "",
+        checked: true,
+        updatedAt: serverTimestamp(),
+      });
+      await batch.commit();
     } catch (err) {
       console.error("Quality update failed", err);
     }
@@ -358,7 +386,7 @@ export default function EditTemplate() {
   // ── Called after user confirms QC status ──────────────────────────────────
   const handleQCConfirm = useCallback(async (choice) => {
     setShowQCModal(false);
-    await saveQualityStatus(choice);
+    await saveQualityStatus(choice, pendingFormData);
     await performSave(pendingFormData);
     setPendingForm(null);
   }, [saveQualityStatus, performSave, pendingFormData]);

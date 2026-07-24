@@ -1,35 +1,45 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { db } from "../../../Firebase";
 import { COLLECTIONS } from "../../collections";
+import {
+  getGraphicsStableKey,
+  getSubtypeQualityDocId,
+  getSubtypeQualityKey,
+  hasSelectedCurrentFlag,
+  normalizeQualityChecks,
+  normalizeQualityFlag,
+} from "./qualityUtils";
 
 const FLAGS = {
-  ok:      { label: "OK",      color: "emerald", desc: "Perfect — no issue" },
-  checked: { label: "Checked", color: "blue",    desc: "Reviewed and checked" },
-  issue:   { label: "Issue",   color: "red",     desc: "Has a problem" },
-  working: { label: "Working", color: "amber",   desc: "Designer fixing it" },
+  ok:    { label: "OK",    desc: "Perfect — no issue" },
+  issue: { label: "Issue", desc: "Has a problem" },
 };
 
 const PAGE_SIZE = 10;
 
 const FLAG_STYLES = {
-  ok:      "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/20",
-  checked: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/20",
-  issue:   "bg-red-50    text-red-700    border-red-200    dark:bg-red-500/10    dark:text-red-400    dark:border-red-500/20",
-  working: "bg-amber-50  text-amber-700  border-amber-200  dark:bg-amber-500/10  dark:text-amber-400  dark:border-amber-500/20",
+  ok:    "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/20",
+  issue: "bg-red-50 text-red-700 border-red-200 dark:bg-red-500/10 dark:text-red-400 dark:border-red-500/20",
 };
 const FLAG_DOT = {
-  ok:      "bg-emerald-500",
-  checked: "bg-blue-500",
-  issue:   "bg-red-500",
-  working: "bg-amber-500",
+  ok:    "bg-emerald-500",
+  issue: "bg-red-500",
 };
 
 function FlagBadge({ flag }) {
-  const f = FLAGS[flag] || FLAGS.ok;
+  if (!flag) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border bg-gray-50 text-gray-500 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700">
+        <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
+        Not Selected
+      </span>
+    );
+  }
+  const f = FLAGS[flag];
   return (
-    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border ${FLAG_STYLES[flag] || FLAG_STYLES.ok}`}>
-      <span className={`w-1.5 h-1.5 rounded-full ${FLAG_DOT[flag] || FLAG_DOT.ok}`} />
+    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border ${FLAG_STYLES[flag]}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${FLAG_DOT[flag]}`} />
       {f.label}
     </span>
   );
@@ -37,7 +47,7 @@ function FlagBadge({ flag }) {
 
 // ── Single row ─────────────────────────────────────────────────────────────
 function QualityRow({ idx, stableKey, check, onChange }) {
-  const flag = check?.flag || "ok";
+  const flag = normalizeQualityFlag(check?.flag);
   const note = check?.note || "";
 
   return (
@@ -54,14 +64,13 @@ function QualityRow({ idx, stableKey, check, onChange }) {
         <div className="flex items-center gap-1.5">
           {Object.keys(FLAGS).map((f) => (
             <button
+              type="button"
               key={f}
               onClick={() => onChange(stableKey, "flag", f)}
               title={FLAGS[f].desc}
               className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-all ${
                 flag === f
-                  ? `${FLAG_STYLES[f]} ring-2 ring-offset-1 ${
-                      f === "ok" ? "ring-emerald-400" : f === "checked" ? "ring-blue-400" : f === "issue" ? "ring-red-400" : "ring-amber-400"
-                    }`
+                  ? `${FLAG_STYLES[f]} ring-2 ring-offset-1 ${f === "ok" ? "ring-emerald-400" : "ring-red-400"}`
                   : "bg-gray-50 dark:bg-gray-800 text-gray-400 border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700"
               }`}
             >
@@ -76,7 +85,7 @@ function QualityRow({ idx, stableKey, check, onChange }) {
         <textarea
           value={note}
           onChange={(e) => onChange(stableKey, "note", e.target.value)}
-          placeholder={flag === "issue" ? "Describe the issue…" : "Add a note (optional)"}
+          placeholder={flag === "issue" ? "Describe the issue…" : flag === "ok" ? "Add a note (optional)" : "Select OK or Issue"}
           rows={1}
           className={`w-full text-xs px-3 py-2 rounded-xl border resize-none focus:outline-none focus:ring-2 transition-all
             ${flag === "issue"
@@ -102,15 +111,13 @@ function QualityRow({ idx, stableKey, check, onChange }) {
 // ── Summary bar ────────────────────────────────────────────────────────────
 function SummaryBar({ checks, links }) {
   const counts = useMemo(() => {
-    const currentKeys = new Set(links.map((l, i) => `${i}:${l.id ?? i}`));
-    const c = { ok: 0, checked: 0, issue: 0, working: 0 };
-    let checked = 0;
-    Object.entries(checks).forEach(([key, { flag }]) => {
-      if (!currentKeys.has(key)) return;
-      c[flag] = (c[flag] || 0) + 1;
-      checked++;
+    const c = { ok: 0, issue: 0, unselected: 0 };
+    links.forEach((link, index) => {
+      const stableKey = getGraphicsStableKey(link, index);
+      const flag = normalizeQualityFlag(checks[stableKey]?.flag);
+      if (flag) c[flag] += 1;
+      else c.unselected += 1;
     });
-    c.ok += links.length - checked;
     return c;
   }, [checks, links]);
 
@@ -122,6 +129,10 @@ function SummaryBar({ checks, links }) {
           {FLAGS[f].label}: {counts[f]}
         </div>
       ))}
+      <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-semibold bg-gray-50 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700">
+        <span className="w-2 h-2 rounded-full bg-gray-400" />
+        Not Selected: {counts.unselected}
+      </div>
     </div>
   );
 }
@@ -130,8 +141,11 @@ function SummaryBar({ checks, links }) {
 export default function QualityCheck({ template, onClose }) {
   const links      = useMemo(() => template?.GraphicsLink || [], [template?.GraphicsLink]);
   const templateId = template?.id;
+  const subtypeKey = useMemo(() => getSubtypeQualityKey(template), [template]);
+  const subtypeDocId = useMemo(() => getSubtypeQualityDocId(subtypeKey), [subtypeKey]);
 
   const [checks,  setChecks]  = useState({});
+  const [subtypeChecked, setSubtypeChecked] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving,  setSaving]  = useState(false);
   const [saved,   setSaved]   = useState(false);
@@ -142,16 +156,28 @@ export default function QualityCheck({ template, onClose }) {
     if (!templateId) return;
     let cancelled = false;
     setChecks({});
+    setSubtypeChecked(false);
     setPage(1);
     setLoading(true);
-    getDoc(doc(db, COLLECTIONS.TEMPLATEQUALITY, templateId))
-      .then((snap) => {
-        if (!cancelled) setChecks(snap.exists() ? (snap.data().checks || {}) : {});
+    Promise.all([
+      getDoc(doc(db, COLLECTIONS.TEMPLATEQUALITY, templateId)),
+      getDoc(doc(db, COLLECTIONS.TEMPLATEQUALITY, subtypeDocId)),
+    ])
+      .then(([templateSnap, subtypeSnap]) => {
+        if (cancelled) return;
+        const rawChecks = templateSnap.exists() ? (templateSnap.data().checks || {}) : {};
+        setChecks(normalizeQualityChecks(rawChecks));
+        const subtypeData = subtypeSnap.exists() ? subtypeSnap.data() : null;
+        setSubtypeChecked(
+          typeof subtypeData?.checked === "boolean"
+            ? subtypeData.checked
+            : hasSelectedCurrentFlag(template, { checks: rawChecks }),
+        );
       })
       .catch(console.error)
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [templateId]);
+  }, [template, templateId, subtypeDocId]);
 
   const totalPages = Math.max(1, Math.ceil(links.length / PAGE_SIZE));
   const pageLinks = useMemo(() => {
@@ -170,12 +196,12 @@ export default function QualityCheck({ template, onClose }) {
     setChecks((prev) => ({
       ...prev,
       [stableKey]: {
-        flag: "ok",
         note: "",
         ...(prev[stableKey] || {}),
         [field]: value,
       },
     }));
+    if (field === "flag") setSubtypeChecked(true);
     setSaved(false);
   }, []);
 
@@ -184,11 +210,37 @@ export default function QualityCheck({ template, onClose }) {
     setSaving(true);
     setError(null);
     try {
-      await setDoc(doc(db, COLLECTIONS.TEMPLATEQUALITY, templateId), {
+      const currentChecks = {};
+      links.forEach((link, index) => {
+        const stableKey = getGraphicsStableKey(link, index);
+        const flag = normalizeQualityFlag(checks[stableKey]?.flag);
+        const note = typeof checks[stableKey]?.note === "string" ? checks[stableKey].note : "";
+        if (flag || note.trim()) {
+          currentChecks[stableKey] = {
+            ...(flag ? { flag } : {}),
+            note,
+          };
+        }
+      });
+
+      const batch = writeBatch(db);
+      batch.set(doc(db, COLLECTIONS.TEMPLATEQUALITY, templateId), {
         templateId,
-        checks,
+        recordType: "template",
+        checks: currentChecks,
         updatedAt: serverTimestamp(),
       });
+      batch.set(doc(db, COLLECTIONS.TEMPLATEQUALITY, subtypeDocId), {
+        recordType: "subtype",
+        subtypeKey,
+        mainType: template?.MainType || "",
+        companyId: template?.MainType === "MLM" ? (template?.Company || "") : "",
+        selectType: template?.SelectType || "",
+        subtype: template?.Subtype || "",
+        checked: subtypeChecked,
+        updatedAt: serverTimestamp(),
+      });
+      await batch.commit();
       setSaved(true);
       setTimeout(() => {
         setSaved(false);
@@ -200,7 +252,7 @@ export default function QualityCheck({ template, onClose }) {
     } finally {
       setSaving(false);
     }
-  }, [templateId, checks, onClose]);
+  }, [templateId, subtypeDocId, subtypeKey, subtypeChecked, template, links, checks, onClose]);
 
   const title = `#${template?.serial || "—"} · ${template?.MainType || ""} / ${(template?.SelectType || "").replace(/_/g, " ")}`;
 
@@ -231,7 +283,7 @@ export default function QualityCheck({ template, onClose }) {
               {title}
             </h2>
             <p className="text-xs text-gray-400 mt-0.5">
-              Review each graphics link — set flag and add notes for issues
+              Review graphics links with OK or Issue, then confirm the subtype
             </p>
           </div>
           <button
@@ -257,6 +309,55 @@ export default function QualityCheck({ template, onClose }) {
 
         {/* Content */}
         <div className="p-6 space-y-4">
+
+          {!loading && (
+            <fieldset className={`rounded-2xl border p-4 ${
+              subtypeChecked
+                ? "border-blue-200 bg-blue-50/60 dark:border-blue-500/30 dark:bg-blue-500/10"
+                : "border-orange-200 bg-orange-50/60 dark:border-orange-500/30 dark:bg-orange-500/10"
+            }`}>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-bold text-gray-800 dark:text-gray-200">
+                    Subtype Check: {template?.Subtype || "—"}
+                  </p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    Changing any Graphics Link flag automatically selects Checked.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className={`flex items-center gap-2 px-3 py-2 rounded-xl border cursor-pointer text-xs font-semibold ${
+                    subtypeChecked
+                      ? "bg-blue-600 text-white border-blue-600"
+                      : "bg-white dark:bg-gray-900 text-gray-500 border-gray-200 dark:border-gray-700"
+                  }`}>
+                    <input
+                      type="radio"
+                      name={`subtype-check-${templateId}`}
+                      checked={subtypeChecked}
+                      onChange={() => { setSubtypeChecked(true); setSaved(false); }}
+                      className="accent-blue-600"
+                    />
+                    Checked
+                  </label>
+                  <label className={`flex items-center gap-2 px-3 py-2 rounded-xl border cursor-pointer text-xs font-semibold ${
+                    !subtypeChecked
+                      ? "bg-orange-500 text-white border-orange-500"
+                      : "bg-white dark:bg-gray-900 text-gray-500 border-gray-200 dark:border-gray-700"
+                  }`}>
+                    <input
+                      type="radio"
+                      name={`subtype-check-${templateId}`}
+                      checked={!subtypeChecked}
+                      onChange={() => { setSubtypeChecked(false); setSaved(false); }}
+                      className="accent-orange-500"
+                    />
+                    Unchecked
+                  </label>
+                </div>
+              </div>
+            </fieldset>
+          )}
 
           {!loading && links.length > 0 && (
             <SummaryBar checks={checks} links={links} />
@@ -292,7 +393,7 @@ export default function QualityCheck({ template, onClose }) {
                   </thead>
                   <tbody>
                     {pageLinks.map(({ link, idx }) => {
-                      const stableKey = `${idx}:${link.id ?? idx}`;
+                      const stableKey = getGraphicsStableKey(link, idx);
                       return (
                         <QualityRow
                           key={stableKey}
@@ -337,10 +438,10 @@ export default function QualityCheck({ template, onClose }) {
             </div>
           )}
 
-          {links.length > 0 && (
+          {!loading && templateId && (
             <div className="flex items-center justify-between gap-4 pt-2 border-t border-gray-100 dark:border-gray-800">
               <p className="text-xs text-gray-400">
-                Changes are saved to the cloud — click Save to persist all flags and notes.
+                Click Save to persist the two flags, notes and subtype status.
               </p>
               <div className="flex items-center gap-3">
                 {saved && (
