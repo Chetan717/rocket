@@ -25,6 +25,7 @@ function Pill({ value, color = "gray" }) {
   const map = {
     gray:    "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
     violet:  "bg-violet-50 text-violet-700 dark:bg-violet-500/10 dark:text-violet-400",
+    blue:    "bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400",
     red:     "bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400",
     emerald: "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400",
     sky:     "bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-400",
@@ -34,6 +35,117 @@ function Pill({ value, color = "gray" }) {
     <span className={`inline-flex items-center justify-center px-2.5 py-0.5 rounded-full text-xs font-bold ${map[color]}`}>
       {value}
     </span>
+  );
+}
+
+const QUALITY_FLAG_KEYS = ["ok", "checked", "issue", "working"];
+
+/**
+ * Match the Quality Check modal exactly: every current graphics link gets one
+ * status, and links without a saved flag use the modal's default "ok" status.
+ * Stale checks that belong to deleted graphics links are intentionally ignored.
+ */
+function getTemplateQualityCounts(template, qualityDoc) {
+  const links = Array.isArray(template?.GraphicsLink) ? template.GraphicsLink : [];
+  const checks = qualityDoc?.checks && typeof qualityDoc.checks === "object"
+    ? qualityDoc.checks
+    : {};
+  const counts = {
+    graphics: links.length,
+    ok: 0,
+    checked: 0,
+    issues: 0,
+    working: 0,
+    hasQualityRecord: Boolean(qualityDoc),
+  };
+
+  links.forEach((link, index) => {
+    const stableKey = `${index}:${link?.id ?? index}`;
+    const savedFlag = typeof checks[stableKey]?.flag === "string"
+      ? checks[stableKey].flag.toLowerCase()
+      : "";
+    const flag = QUALITY_FLAG_KEYS.includes(savedFlag) ? savedFlag : "ok";
+
+    if (flag === "issue") counts.issues += 1;
+    else counts[flag] += 1;
+  });
+
+  return counts;
+}
+
+function PaginationBar({ page, total, onPage }) {
+  if (total <= 1) return null;
+  return (
+    <div className="flex items-center justify-center gap-2 px-4 py-3 border-t border-gray-100 dark:border-gray-800">
+      <button onClick={() => onPage(p => Math.max(1, p - 1))} disabled={page === 1}
+        className="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40 transition-colors">
+        ← Prev
+      </button>
+      <span className="text-xs text-gray-500 px-2">Page {page} / {total}</span>
+      <button onClick={() => onPage(p => Math.min(total, p + 1))} disabled={page === total}
+        className="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40 transition-colors">
+        Next →
+      </button>
+    </div>
+  );
+}
+
+function QualityAnalyticsTable({
+  rows,
+  page,
+  totalPages,
+  onPage,
+  pageSize,
+  emptyMessage,
+}) {
+  return (
+    <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-gray-50 dark:bg-gray-800/60 border-b border-gray-100 dark:border-gray-800">
+              {["Sn", "Company", "Type", "Select Type", "Subtype", "Serial", "Graphics Links", "OK", "Checked", "Issue", "Working"].map(h => (
+                <th key={h} className="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 whitespace-nowrap">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
+            {rows.length === 0 ? (
+              <tr><td colSpan={11} className="py-16 text-center text-sm text-gray-400">{emptyMessage}</td></tr>
+            ) : rows.map((row, i) => (
+              <tr key={row.id} className={`hover:bg-gray-50/60 dark:hover:bg-gray-800/30 transition-colors ${row.Issues > 0 ? "bg-red-50/20 dark:bg-red-500/5" : ""}`}>
+                <td className="px-4 py-3 text-[11px] text-gray-400">{(page - 1) * pageSize + i + 1}</td>
+                <td className="px-4 py-3 text-xs font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">{row.Company}</td>
+                <td className="px-4 py-3">
+                  <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
+                    row.MainType === "MLM"
+                      ? "bg-violet-50 text-violet-700 border-violet-100 dark:bg-violet-500/10 dark:text-violet-400"
+                      : "bg-sky-50 text-sky-700 border-sky-100 dark:bg-sky-500/10 dark:text-sky-400"
+                  }`}>{row.MainType}</span>
+                </td>
+                <td className="px-4 py-3 text-xs text-gray-600 dark:text-gray-400">{row.SelectType}</td>
+                <td className="px-4 py-3 text-xs text-gray-500">{row.Subtype}</td>
+                <td className="px-4 py-3 text-xs font-mono text-violet-600 dark:text-violet-400">#{row.Serial}</td>
+                <td className="px-4 py-3"><Pill value={row.Graphics} color="violet" /></td>
+                <td className="px-4 py-3"><Pill value={row.OK} color="emerald" /></td>
+                <td className="px-4 py-3"><Pill value={row.Checked} color="blue" /></td>
+                <td className="px-4 py-3">
+                  {row.Issues > 0
+                    ? <Pill value={row.Issues} color="red" />
+                    : <span className="text-[11px] text-gray-300 dark:text-gray-600">—</span>}
+                </td>
+                <td className="px-4 py-3">
+                  {row.Working > 0
+                    ? <Pill value={row.Working} color="amber" />
+                    : <span className="text-[11px] text-gray-300 dark:text-gray-600">—</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <PaginationBar page={page} total={totalPages} onPage={onPage} />
+    </div>
   );
 }
 
@@ -281,26 +393,19 @@ export default function TemplateData() {
     return m;
   }, [companies]);
 
-  const issueCountMap = useMemo(() => {
+  const qualityDocMap = useMemo(() => {
     const m = {};
-    qualityDocs.forEach(q => {
-      const issues = Object.values(q.checks || {}).filter(v => v.flag === "issue").length;
-      if (issues > 0) m[q.id] = issues;
-    });
+    qualityDocs.forEach(q => { m[q.id] = q; });
     return m;
   }, [qualityDocs]);
 
   const qualityStatusMap = useMemo(() => {
     const m = {};
-    qualityDocs.forEach(q => {
-      const checks  = Object.values(q.checks || {});
-      const issues  = checks.filter(v => v.flag === "issue").length;
-      const working = checks.filter(v => v.flag === "working").length;
-      const ok      = checks.filter(v => v.flag === "ok").length;
-      m[q.id] = { issues, working, ok, total: checks.length };
+    allTemplates.forEach(template => {
+      m[template.id] = getTemplateQualityCounts(template, qualityDocMap[template.id]);
     });
     return m;
-  }, [qualityDocs]);
+  }, [allTemplates, qualityDocMap]);
 
   const filteredTemplates = useMemo(() => {
     let list = allTemplates;
@@ -321,13 +426,18 @@ export default function TemplateData() {
       if (!grouped[key]) grouped[key] = {
         MainType: mainType, Company: mainType === "MLM" ? company : "—",
         SelectType: selType, Subtype: subtype,
-        Total: 0, Active: 0, Launched: 0, Issues: 0, Graphics: 0,
+        Total: 0, Active: 0, Launched: 0, Graphics: 0,
+        OK: 0, Checked: 0, Issues: 0, Working: 0,
       };
+      const quality = qualityStatusMap[t.id] || getTemplateQualityCounts(t);
       grouped[key].Total++;
       if (t.Active)    grouped[key].Active++;
       if (t.Launched)  grouped[key].Launched++;
-      grouped[key].Issues   += issueCountMap[t.id]  || 0;
-      grouped[key].Graphics += (t.GraphicsLink || []).length;
+      grouped[key].Graphics += quality.graphics;
+      grouped[key].OK       += quality.ok;
+      grouped[key].Checked  += quality.checked;
+      grouped[key].Issues   += quality.issues;
+      grouped[key].Working  += quality.working;
     });
     return Object.values(grouped).sort((a, b) =>
       a.MainType.localeCompare(b.MainType) ||
@@ -335,12 +445,12 @@ export default function TemplateData() {
       a.SelectType.localeCompare(b.SelectType) ||
       a.Subtype.localeCompare(b.Subtype)
     );
-  }, [filteredTemplates, issueCountMap, companiesMap]);
+  }, [filteredTemplates, qualityStatusMap, companiesMap]);
 
-  // ── Quality report ────────────────────────────────────────────────────
-  const qualityReport = useMemo(() => {
+  // ── Per-template quality analytics ────────────────────────────────────
+  const checkedTemplateReport = useMemo(() => {
     return filteredTemplates
-      .filter(t => qualityStatusMap[t.id])
+      .filter(t => qualityStatusMap[t.id]?.hasQualityRecord)
       .map(t => {
         const q = qualityStatusMap[t.id] || {};
         return {
@@ -350,22 +460,55 @@ export default function TemplateData() {
           SelectType: (t.SelectType || "—").replace(/_/g, " "),
           Subtype:    t.Subtype    || "—",
           Serial:     t.serial     ?? "—",
-          TotalChecked: q.total,
-          OK: q.ok, Issues: q.issues, Working: q.working,
+          Graphics:   q.graphics || 0,
+          OK:          q.ok || 0,
+          Checked:     q.checked || 0,
+          Issues:      q.issues || 0,
+          Working:     q.working || 0,
         };
       })
       .sort((a, b) => (b.Issues - a.Issues) || a.Company.localeCompare(b.Company));
   }, [filteredTemplates, qualityStatusMap, companiesMap]);
 
+  const issueTemplateReport = useMemo(
+    () => checkedTemplateReport.filter(row => row.Issues > 0),
+    [checkedTemplateReport],
+  );
+
   // ── Summary stats ─────────────────────────────────────────────────────
-  const summary = useMemo(() => ({
-    total:    filteredTemplates.length,
-    mlm:      filteredTemplates.filter(t => t.MainType === "MLM").length,
-    general:  filteredTemplates.filter(t => t.MainType !== "MLM").length,
-    active:   filteredTemplates.filter(t => t.Active).length,
-    launched: filteredTemplates.filter(t => t.Launched).length,
-    issues:   filteredTemplates.reduce((s, t) => s + (issueCountMap[t.id] || 0), 0),
-  }), [filteredTemplates, issueCountMap]);
+  const summary = useMemo(() => {
+    const totals = {
+      total: filteredTemplates.length,
+      mlm: 0,
+      general: 0,
+      active: 0,
+      launched: 0,
+      graphics: 0,
+      checkedTemplates: 0,
+      issueTemplates: 0,
+      ok: 0,
+      checked: 0,
+      issues: 0,
+      working: 0,
+    };
+
+    filteredTemplates.forEach(template => {
+      const quality = qualityStatusMap[template.id] || getTemplateQualityCounts(template);
+      if (template.MainType === "MLM") totals.mlm += 1;
+      else totals.general += 1;
+      if (template.Active) totals.active += 1;
+      if (template.Launched) totals.launched += 1;
+      if (quality.hasQualityRecord) totals.checkedTemplates += 1;
+      if (quality.issues > 0) totals.issueTemplates += 1;
+      totals.graphics += quality.graphics;
+      totals.ok += quality.ok;
+      totals.checked += quality.checked;
+      totals.issues += quality.issues;
+      totals.working += quality.working;
+    });
+
+    return totals;
+  }, [filteredTemplates, qualityStatusMap]);
 
   // ── Download handlers ─────────────────────────────────────────────────
   const downloadWorkbook = useCallback(() => {
@@ -380,28 +523,24 @@ export default function TemplateData() {
   // ── Pagination ────────────────────────────────────────────────────────
   const PAGE = 50;
   const [tPage, setTPage] = useState(1);
-  const [qPage, setQPage] = useState(1);
+  const [cPage, setCPage] = useState(1);
+  const [iPage, setIPage] = useState(1);
   const tPages = Math.max(1, Math.ceil(templateReport.length / PAGE));
-  const qPages = Math.max(1, Math.ceil(qualityReport.length  / PAGE));
+  const cPages = Math.max(1, Math.ceil(checkedTemplateReport.length / PAGE));
+  const iPages = Math.max(1, Math.ceil(issueTemplateReport.length / PAGE));
   const paginatedT = useMemo(() => templateReport.slice((tPage - 1) * PAGE, tPage * PAGE), [templateReport, tPage]);
-  const paginatedQ = useMemo(() => qualityReport.slice((qPage  - 1) * PAGE, qPage  * PAGE), [qualityReport,  qPage]);
+  const paginatedC = useMemo(() => checkedTemplateReport.slice((cPage - 1) * PAGE, cPage * PAGE), [checkedTemplateReport, cPage]);
+  const paginatedI = useMemo(() => issueTemplateReport.slice((iPage - 1) * PAGE, iPage * PAGE), [issueTemplateReport, iPage]);
 
-  function PaginationBar({ page, total, onPage }) {
-    if (total <= 1) return null;
-    return (
-      <div className="flex items-center justify-center gap-2 px-4 py-3 border-t border-gray-100 dark:border-gray-800">
-        <button onClick={() => onPage(p => Math.max(1, p - 1))} disabled={page === 1}
-          className="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40 transition-colors">
-          ← Prev
-        </button>
-        <span className="text-xs text-gray-500 px-2">Page {page} / {total}</span>
-        <button onClick={() => onPage(p => Math.min(total, p + 1))} disabled={page === total}
-          className="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40 transition-colors">
-          Next →
-        </button>
-      </div>
-    );
-  }
+  useEffect(() => {
+    if (tPage > tPages) setTPage(tPages);
+  }, [tPage, tPages]);
+  useEffect(() => {
+    if (cPage > cPages) setCPage(cPages);
+  }, [cPage, cPages]);
+  useEffect(() => {
+    if (iPage > iPages) setIPage(iPages);
+  }, [iPage, iPages]);
 
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-6">
@@ -425,49 +564,80 @@ export default function TemplateData() {
 
       {/* Summary cards */}
       {!loading && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          {[
-            { label: "Total",    value: summary.total,    color: "gray"    },
-            { label: "MLM",      value: summary.mlm,      color: "violet"  },
-            { label: "General",  value: summary.general,  color: "sky"     },
-            { label: "Active",   value: summary.active,   color: "emerald" },
-            { label: "Launched", value: summary.launched, color: "violet"  },
-            { label: "Issues",   value: summary.issues,   color: summary.issues > 0 ? "red" : "gray" },
-          ].map(({ label, value, color }) => {
-            const styles = {
-              gray:    "bg-gray-50 dark:bg-gray-800/60 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300",
-              violet:  "bg-violet-50 dark:bg-violet-500/10 border-violet-100 dark:border-violet-500/20 text-violet-700 dark:text-violet-400",
-              sky:     "bg-sky-50 dark:bg-sky-500/10 border-sky-100 dark:border-sky-500/20 text-sky-700 dark:text-sky-400",
-              emerald: "bg-emerald-50 dark:bg-emerald-500/10 border-emerald-100 dark:border-emerald-500/20 text-emerald-700 dark:text-emerald-400",
-              red:     "bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20 text-red-700 dark:text-red-400",
-            };
-            return (
-              <div key={label} className={`flex flex-col items-center justify-center px-4 py-4 rounded-2xl border ${styles[color]}`}>
-                <span className="text-2xl font-bold">{value}</span>
-                <span className="text-xs font-medium mt-0.5 opacity-80">{label}</span>
-              </div>
-            );
-          })}
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            {[
+              { label: "Total Templates", value: summary.total,    color: "gray"    },
+              { label: "MLM",             value: summary.mlm,      color: "violet"  },
+              { label: "General",         value: summary.general,  color: "sky"     },
+              { label: "Active",          value: summary.active,   color: "emerald" },
+              { label: "Launched",        value: summary.launched, color: "violet"  },
+              { label: "Graphics Links",  value: summary.graphics, color: "gray"    },
+            ].map(({ label, value, color }) => {
+              const styles = {
+                gray:    "bg-gray-50 dark:bg-gray-800/60 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300",
+                violet:  "bg-violet-50 dark:bg-violet-500/10 border-violet-100 dark:border-violet-500/20 text-violet-700 dark:text-violet-400",
+                sky:     "bg-sky-50 dark:bg-sky-500/10 border-sky-100 dark:border-sky-500/20 text-sky-700 dark:text-sky-400",
+                emerald: "bg-emerald-50 dark:bg-emerald-500/10 border-emerald-100 dark:border-emerald-500/20 text-emerald-700 dark:text-emerald-400",
+              };
+              return (
+                <div key={label} className={`flex flex-col items-center justify-center px-4 py-4 rounded-2xl border ${styles[color]}`}>
+                  <span className="text-2xl font-bold">{value}</span>
+                  <span className="text-xs font-medium mt-0.5 opacity-80">{label}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            {[
+              { label: "Checked Templates", value: summary.checkedTemplates, color: "violet"  },
+              { label: "Issue Templates",   value: summary.issueTemplates,   color: summary.issueTemplates > 0 ? "red" : "gray" },
+              { label: "OK",                value: summary.ok,               color: "emerald" },
+              { label: "Checked",           value: summary.checked,          color: "blue"    },
+              { label: "Issue",             value: summary.issues,           color: summary.issues > 0 ? "red" : "gray" },
+              { label: "Working",           value: summary.working,          color: "amber"   },
+            ].map(({ label, value, color }) => {
+              const styles = {
+                gray:    "bg-gray-50 dark:bg-gray-800/60 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300",
+                violet:  "bg-violet-50 dark:bg-violet-500/10 border-violet-100 dark:border-violet-500/20 text-violet-700 dark:text-violet-400",
+                emerald: "bg-emerald-50 dark:bg-emerald-500/10 border-emerald-100 dark:border-emerald-500/20 text-emerald-700 dark:text-emerald-400",
+                blue:    "bg-blue-50 dark:bg-blue-500/10 border-blue-100 dark:border-blue-500/20 text-blue-700 dark:text-blue-400",
+                red:     "bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20 text-red-700 dark:text-red-400",
+                amber:   "bg-amber-50 dark:bg-amber-500/10 border-amber-100 dark:border-amber-500/20 text-amber-700 dark:text-amber-400",
+              };
+              return (
+                <div key={label} className={`flex flex-col items-center justify-center px-4 py-4 rounded-2xl border ${styles[color]}`}>
+                  <span className="text-2xl font-bold">{value}</span>
+                  <span className="text-xs font-medium mt-0.5 opacity-80">{label}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          <p className="text-xs text-gray-400 dark:text-gray-500">
+            Quality totals follow the Quality Check screen: every graphics link is counted once; a link without a saved flag is counted as OK.
+          </p>
         </div>
       )}
 
       {/* Filters + Download */}
       <div className="flex flex-wrap gap-3 items-center">
-        <select value={filterType} onChange={e => { setFilterType(e.target.value); setTPage(1); setQPage(1); }}
+        <select value={filterType} onChange={e => { setFilterType(e.target.value); setTPage(1); setCPage(1); setIPage(1); }}
           className="pl-4 pr-9 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-400/30 appearance-none cursor-pointer">
           <option value="">All Types</option>
           <option value="MLM">MLM Only</option>
           <option value="General">General Only</option>
         </select>
 
-        <select value={filterCompany} onChange={e => { setFilterCompany(e.target.value); setTPage(1); setQPage(1); }}
+        <select value={filterCompany} onChange={e => { setFilterCompany(e.target.value); setTPage(1); setCPage(1); setIPage(1); }}
           className="pl-4 pr-9 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-400/30 appearance-none cursor-pointer">
           <option value="">All Companies</option>
           {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
 
         {(filterType || filterCompany) && (
-          <button onClick={() => { setFilterType(""); setFilterCompany(""); setTPage(1); setQPage(1); }}
+          <button onClick={() => { setFilterType(""); setFilterCompany(""); setTPage(1); setCPage(1); setIPage(1); }}
             className="px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
             Clear ×
           </button>
@@ -513,7 +683,8 @@ export default function TemplateData() {
           <div className="flex items-center gap-2 p-1 bg-gray-100 dark:bg-gray-800 rounded-2xl w-fit">
             {[
               { id: "template", label: `Template Breakdown (${templateReport.length})` },
-              { id: "quality",  label: `Quality Check (${qualityReport.length})` },
+              { id: "checked",  label: `Checked Templates (${checkedTemplateReport.length})` },
+              { id: "issues",   label: `Issue Templates (${issueTemplateReport.length})` },
             ].map(tab => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)}
                 className={`px-5 py-2 rounded-xl text-sm font-semibold transition-all ${
@@ -533,14 +704,14 @@ export default function TemplateData() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-gray-50 dark:bg-gray-800/60 border-b border-gray-100 dark:border-gray-800">
-                      {["Sn", "Type", "Company", "Select Type", "Subtype", "Templates", "Graphics Links", "Issues"].map(h => (
+                      {["Sn", "Type", "Company", "Select Type", "Subtype", "Templates", "Graphics Links", "OK", "Checked", "Issue", "Working"].map(h => (
                         <th key={h} className="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
                     {paginatedT.length === 0 ? (
-                      <tr><td colSpan={8} className="py-16 text-center text-sm text-gray-400">No data found. Adjust filters or refresh.</td></tr>
+                      <tr><td colSpan={11} className="py-16 text-center text-sm text-gray-400">No data found. Adjust filters or refresh.</td></tr>
                     ) : paginatedT.map((row, i) => (
                       <tr key={`${row.MainType}-${row.Company}-${row.SelectType}-${row.Subtype}`}
                         className="hover:bg-gray-50/60 dark:hover:bg-gray-800/30 transition-colors">
@@ -557,9 +728,16 @@ export default function TemplateData() {
                         <td className="px-4 py-3 text-xs text-gray-500">{row.Subtype}</td>
                         <td className="px-4 py-3"><Pill value={row.Total}    color="gray"   /></td>
                         <td className="px-4 py-3"><Pill value={row.Graphics} color="violet" /></td>
+                        <td className="px-4 py-3"><Pill value={row.OK} color="emerald" /></td>
+                        <td className="px-4 py-3"><Pill value={row.Checked} color="blue" /></td>
                         <td className="px-4 py-3">
                           {row.Issues > 0
                             ? <Pill value={row.Issues} color="red" />
+                            : <span className="text-[11px] text-gray-300 dark:text-gray-600">—</span>}
+                        </td>
+                        <td className="px-4 py-3">
+                          {row.Working > 0
+                            ? <Pill value={row.Working} color="amber" />
                             : <span className="text-[11px] text-gray-300 dark:text-gray-600">—</span>}
                         </td>
                       </tr>
@@ -571,52 +749,28 @@ export default function TemplateData() {
             </div>
           )}
 
-          {/* ── Quality Check ── */}
-          {activeTab === "quality" && (
-            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-gray-50 dark:bg-gray-800/60 border-b border-gray-100 dark:border-gray-800">
-                      {["Sn", "Company", "Type", "Select Type", "Subtype", "Serial", "Total", "OK", "Issues", "Working"].map(h => (
-                        <th key={h} className="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 whitespace-nowrap">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
-                    {paginatedQ.length === 0 ? (
-                      <tr><td colSpan={10} className="py-16 text-center text-sm text-gray-400">No quality check data found.</td></tr>
-                    ) : paginatedQ.map((row, i) => (
-                      <tr key={row.id} className={`hover:bg-gray-50/60 dark:hover:bg-gray-800/30 transition-colors ${row.Issues > 0 ? "bg-red-50/20 dark:bg-red-500/5" : ""}`}>
-                        <td className="px-4 py-3 text-[11px] text-gray-400">{(qPage - 1) * PAGE + i + 1}</td>
-                        <td className="px-4 py-3 text-xs font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">{row.Company}</td>
-                        <td className="px-4 py-3">
-                          <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
-                            row.MainType === "MLM"
-                              ? "bg-violet-50 text-violet-700 border-violet-100 dark:bg-violet-500/10 dark:text-violet-400"
-                              : "bg-sky-50 text-sky-700 border-sky-100 dark:bg-sky-500/10 dark:text-sky-400"
-                          }`}>{row.MainType}</span>
-                        </td>
-                        <td className="px-4 py-3 text-xs text-gray-600 dark:text-gray-400">{row.SelectType}</td>
-                        <td className="px-4 py-3 text-xs text-gray-500">{row.Subtype}</td>
-                        <td className="px-4 py-3 text-xs font-mono text-violet-600 dark:text-violet-400">#{row.Serial}</td>
-                        <td className="px-4 py-3"><Pill value={row.TotalChecked} color="gray" /></td>
-                        <td className="px-4 py-3"><Pill value={row.OK}      color="emerald" /></td>
-                        <td className="px-4 py-3">
-                          {row.Issues > 0 ? <Pill value={row.Issues} color="red" /> : <span className="text-[11px] text-gray-300 dark:text-gray-600">—</span>}
-                        </td>
-                        <td className="px-4 py-3">
-                          {row.Working > 0
-                            ? <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">{row.Working}</span>
-                            : <span className="text-[11px] text-gray-300 dark:text-gray-600">—</span>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <PaginationBar page={qPage} total={qPages} onPage={setQPage} />
-            </div>
+          {/* ── Checked Templates ── */}
+          {activeTab === "checked" && (
+            <QualityAnalyticsTable
+              rows={paginatedC}
+              page={cPage}
+              totalPages={cPages}
+              onPage={setCPage}
+              pageSize={PAGE}
+              emptyMessage="No checked template data found."
+            />
+          )}
+
+          {/* ── Issue Templates ── */}
+          {activeTab === "issues" && (
+            <QualityAnalyticsTable
+              rows={paginatedI}
+              page={iPage}
+              totalPages={iPages}
+              onPage={setIPage}
+              pageSize={PAGE}
+              emptyMessage="No issue templates found."
+            />
           )}
         </>
       )}
