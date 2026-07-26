@@ -1,22 +1,32 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   collection,
   deleteDoc,
   doc,
-  getDocs,
+  onSnapshot,
+  query,
   serverTimestamp,
   updateDoc,
+  where,
   writeBatch,
 } from "firebase/firestore";
 import { db } from "../../../Firebase";
 import { COLLECTIONS } from "../../collections";
 import { getAdminSession } from "../../Utils/adminSession";
+import {
+  getTaskRole,
+  getTaskRoleLabel,
+  normalizeTaskRoleKey,
+  TASK_ROLE_OPTIONS,
+  TASK_STATUSES,
+} from "../../Utils/taskManagement";
 
-const STATUSES = ["Initiated", "Pending", "Completed"];
+const STATUSES = TASK_STATUSES;
 const PAGE_SIZES = [10, 20, 50];
 
 const STATUS_STYLE = {
   Initiated: "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-500/10 dark:text-sky-400 dark:border-sky-500/20",
+  Working: "bg-violet-50 text-violet-700 border-violet-200 dark:bg-violet-500/10 dark:text-violet-400 dark:border-violet-500/20",
   Pending: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:border-amber-500/20",
   Completed: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/20",
 };
@@ -91,20 +101,23 @@ function Pagination({ page, totalPages, onChange }) {
   );
 }
 
-function EditTaskModal({ task, saving, onSave, onClose }) {
+function EditTaskModal({ task, saving, canReassign, onSave, onClose }) {
+  const existingRole = getTaskRole(task.assignedRoleKey || task.assignedRole);
   const [form, setForm] = useState({
     name: task.name || "",
     taskDate: task.taskDate || "",
     description: task.description || "",
     companyName: task.companyName || "",
     status: STATUSES.includes(task.status) ? task.status : "Initiated",
+    assignedRoleKey: existingRole.key,
   });
   const [error, setError] = useState("");
 
   const submit = (event) => {
     event.preventDefault();
-    if (!form.name.trim() || !form.taskDate || !form.description.trim()) {
-      setError("Name, date and description are required.");
+    const selectedRole = getTaskRole(form.assignedRoleKey);
+    if (!form.name.trim() || !form.taskDate || !form.description.trim() || !normalizeTaskRoleKey(selectedRole.key)) {
+      setError("Name, date, description and assigned role are required.");
       return;
     }
     onSave({
@@ -113,6 +126,8 @@ function EditTaskModal({ task, saving, onSave, onClose }) {
       description: form.description.trim(),
       companyName: form.companyName.trim(),
       status: form.status,
+      assignedRoleKey: selectedRole.key,
+      assignedRole: selectedRole.label,
     });
   };
 
@@ -146,12 +161,25 @@ function EditTaskModal({ task, saving, onSave, onClose }) {
             Company Name <span className="normal-case text-gray-400 font-normal">(optional)</span>
             <input value={form.companyName} maxLength={150} onChange={(event) => set("companyName", event.target.value)} className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-800 dark:text-gray-200 normal-case font-normal" />
           </label>
-          <label className="space-y-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wide block">
-            Status
-            <select value={form.status} onChange={(event) => set("status", event.target.value)} className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-800 dark:text-gray-200 normal-case font-normal">
-              {STATUSES.map((status) => <option key={status}>{status}</option>)}
-            </select>
-          </label>
+          <div className="grid sm:grid-cols-2 gap-4">
+            <label className="space-y-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              Status
+              <select value={form.status} onChange={(event) => set("status", event.target.value)} className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-800 dark:text-gray-200 normal-case font-normal">
+                {STATUSES.map((status) => <option key={status}>{status}</option>)}
+              </select>
+            </label>
+            <label className="space-y-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              Assigned Role
+              <select
+                value={form.assignedRoleKey}
+                disabled={!canReassign}
+                onChange={(event) => set("assignedRoleKey", event.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-800 dark:text-gray-200 normal-case font-normal disabled:opacity-70 disabled:cursor-not-allowed"
+              >
+                {TASK_ROLE_OPTIONS.map((role) => <option key={role.key} value={role.key}>{role.label}</option>)}
+              </select>
+            </label>
+          </div>
           <label className="space-y-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wide block">
             Description
             <textarea rows={5} value={form.description} maxLength={2000} onChange={(event) => set("description", event.target.value)} className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-800 dark:text-gray-200 resize-y normal-case font-normal" />
@@ -169,12 +197,15 @@ function EditTaskModal({ task, saving, onSave, onClose }) {
 
 export default function TaskManagement() {
   const admin = useMemo(() => getAdminSession() || {}, []);
-  const canAccess = admin.role === "Master Admin" || (admin.assigntab || []).includes("taskmanagement");
+  const adminRoleKey = useMemo(() => normalizeTaskRoleKey(admin.role), [admin.role]);
+  const isMasterAdmin = adminRoleKey === "master_admin";
+  const canAccess = isMasterAdmin || (admin.assigntab || []).includes("taskmanagement");
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(1);
@@ -183,45 +214,68 @@ export default function TaskManagement() {
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
-  const fetchTasks = useCallback(async () => {
+  useEffect(() => {
     if (!canAccess) {
       setLoading(false);
-      return;
+      return undefined;
     }
+    if (!isMasterAdmin && !adminRoleKey) {
+      setTasks([]);
+      setError("Your admin role is not supported for role-based task assignment. Ask Master Admin to update your role.");
+      setLoading(false);
+      return undefined;
+    }
+
     setLoading(true);
     setError("");
-    try {
-      const snapshot = await getDocs(collection(db, COLLECTIONS.TASKM));
-      const items = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
-      items.sort((a, b) => (b.taskDate || "").localeCompare(a.taskDate || "") || toMillis(b.createdAt) - toMillis(a.createdAt));
-      setTasks(items);
-    } catch (taskError) {
-      console.error(taskError);
-      setError("Tasks could not be loaded. Check Firestore rules and try again.");
-    } finally {
-      setLoading(false);
-    }
-  }, [canAccess]);
+    const taskSource = isMasterAdmin
+      ? collection(db, COLLECTIONS.TASKM)
+      : query(
+        collection(db, COLLECTIONS.TASKM),
+        where("assignedRoleKey", "==", adminRoleKey),
+      );
 
-  useEffect(() => { fetchTasks(); }, [fetchTasks]);
+    const unsubscribe = onSnapshot(
+      taskSource,
+      (snapshot) => {
+        const items = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+        items.sort((a, b) => (b.taskDate || "").localeCompare(a.taskDate || "") || toMillis(b.createdAt) - toMillis(a.createdAt));
+        setTasks(items);
+        setSelected((previous) => {
+          const visibleIds = new Set(items.map((item) => item.id));
+          return new Set(Array.from(previous).filter((id) => visibleIds.has(id)));
+        });
+        setLoading(false);
+      },
+      (taskError) => {
+        console.error(taskError);
+        setError("Tasks could not be loaded. Apply the included role-based Firestore rule update and try again.");
+        setLoading(false);
+      },
+    );
+
+    return unsubscribe;
+  }, [adminRoleKey, canAccess, isMasterAdmin, reloadKey]);
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return tasks.filter((task) => {
       if (status && task.status !== status) return false;
+      if (roleFilter && normalizeTaskRoleKey(task.assignedRoleKey || task.assignedRole) !== roleFilter) return false;
       if (dateFrom && (task.taskDate || "") < dateFrom) return false;
       if (dateTo && (task.taskDate || "") > dateTo) return false;
       if (!needle) return true;
-      return [task.name, task.description, task.companyName, task.createdByName]
+      return [task.name, task.description, task.companyName, task.createdByName, task.assignedRole]
         .some((value) => String(value || "").toLowerCase().includes(needle));
     });
-  }, [tasks, search, status, dateFrom, dateTo]);
+  }, [tasks, search, status, roleFilter, dateFrom, dateTo]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const pageItems = useMemo(() => filtered.slice((page - 1) * pageSize, page * pageSize), [filtered, page, pageSize]);
 
-  useEffect(() => { setPage(1); }, [search, status, dateFrom, dateTo, pageSize]);
+  useEffect(() => { setPage(1); }, [search, status, roleFilter, dateFrom, dateTo, pageSize]);
   useEffect(() => { if (page > totalPages) setPage(totalPages); }, [page, totalPages]);
 
   const pageSelected = pageItems.length > 0 && pageItems.every((task) => selected.has(task.id));
@@ -239,11 +293,15 @@ export default function TaskManagement() {
   });
 
   const updateStatus = async (task, nextStatus) => {
+    if (!STATUSES.includes(nextStatus) || nextStatus === task.status) return;
     const previousStatus = task.status;
+    const assignedRole = getTaskRole(task.assignedRoleKey || task.assignedRole);
     setTasks((items) => items.map((item) => item.id === task.id ? { ...item, status: nextStatus } : item));
     try {
       await updateDoc(doc(db, COLLECTIONS.TASKM, task.id), {
         status: nextStatus,
+        assignedRoleKey: assignedRole.key,
+        assignedRole: assignedRole.label,
         updatedAt: serverTimestamp(),
         updatedByUid: admin.uid || "",
         updatedByName: admin.name || "Admin",
@@ -315,6 +373,7 @@ export default function TaskManagement() {
   const clearFilters = () => {
     setSearch("");
     setStatus("");
+    setRoleFilter("");
     setDateFrom("");
     setDateTo("");
   };
@@ -337,17 +396,22 @@ export default function TaskManagement() {
             <span className="text-violet-600"><IconTasks /></span>
             <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Task Management</h1>
           </div>
-          <p className="text-sm text-gray-400 mt-1">Tasks sent by marketing members to the admin team.</p>
+          <p className="text-sm text-gray-400 mt-1">
+            {isMasterAdmin
+              ? "All role-based tasks sent by marketing members."
+              : `Tasks assigned to the ${getTaskRoleLabel(adminRoleKey, admin.role || "current")} role.`}
+          </p>
         </div>
-        <button type="button" onClick={fetchTasks} disabled={loading} className="px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm font-semibold text-gray-600 dark:text-gray-300 disabled:opacity-50">
+        <button type="button" onClick={() => setReloadKey((value) => value + 1)} disabled={loading} className="px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm font-semibold text-gray-600 dark:text-gray-300 disabled:opacity-50">
           {loading ? "Refreshing…" : "Refresh"}
         </button>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3">
         {[
           ["Total", tasks.length, "text-gray-700 dark:text-gray-200"],
           ["Initiated", tasks.filter((task) => task.status === "Initiated").length, "text-sky-600"],
+          ["Working", tasks.filter((task) => task.status === "Working").length, "text-violet-600"],
           ["Pending", tasks.filter((task) => task.status === "Pending").length, "text-amber-600"],
           ["Completed", tasks.filter((task) => task.status === "Completed").length, "text-emerald-600"],
         ].map(([label, count, style]) => (
@@ -359,14 +423,24 @@ export default function TaskManagement() {
       </div>
 
       <div className="rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 space-y-3">
-        <div className="grid md:grid-cols-[minmax(220px,1fr)_170px_160px_160px_auto] gap-3">
-          <div className="relative">
+        <div className="grid md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_150px_175px_150px_150px_auto] gap-3">
+          <div className="relative md:col-span-2 xl:col-span-1">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"><IconSearch /></span>
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search task, company, member…" className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-200" />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search task, company, member or role…" className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-200" />
           </div>
           <select value={status} onChange={(event) => setStatus(event.target.value)} className="px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-200">
             <option value="">All Statuses</option>
             {STATUSES.map((item) => <option key={item}>{item}</option>)}
+          </select>
+          <select
+            aria-label="Filter by assigned role"
+            value={isMasterAdmin ? roleFilter : adminRoleKey}
+            disabled={!isMasterAdmin}
+            onChange={(event) => setRoleFilter(event.target.value)}
+            className="px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-200 disabled:opacity-70 disabled:cursor-not-allowed"
+          >
+            {isMasterAdmin && <option value="">All Roles</option>}
+            {TASK_ROLE_OPTIONS.map((role) => <option key={role.key} value={role.key}>{role.label}</option>)}
           </select>
           <input type="date" aria-label="From date" value={dateFrom} max={dateTo || undefined} onChange={(event) => setDateFrom(event.target.value)} className="px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-200" />
           <input type="date" aria-label="To date" value={dateTo} min={dateFrom || undefined} onChange={(event) => setDateTo(event.target.value)} className="px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-200" />
@@ -393,12 +467,12 @@ export default function TaskManagement() {
               <thead>
                 <tr className="bg-gray-50 dark:bg-gray-800/60 border-b border-gray-100 dark:border-gray-800">
                   <th className="px-4 py-3 text-left"><input type="checkbox" checked={pageSelected} onChange={togglePage} aria-label="Select current page" className="accent-violet-600" /></th>
-                  {['Task', 'Date', 'Company', 'Created By', 'Status', 'Actions'].map((heading) => <th key={heading} className="px-4 py-3 text-left text-[11px] uppercase tracking-wider text-gray-500 font-bold whitespace-nowrap">{heading}</th>)}
+                  {['Task', 'Date', 'Company', 'Assigned Role', 'Created By', 'Status', 'Actions'].map((heading) => <th key={heading} className="px-4 py-3 text-left text-[11px] uppercase tracking-wider text-gray-500 font-bold whitespace-nowrap">{heading}</th>)}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
                 {pageItems.length === 0 ? (
-                  <tr><td colSpan={7} className="px-4 py-16 text-center text-gray-400">No tasks match the selected filters.</td></tr>
+                  <tr><td colSpan={8} className="px-4 py-16 text-center text-gray-400">No tasks match the selected role and filters.</td></tr>
                 ) : pageItems.map((task) => (
                   <tr key={task.id} className={`hover:bg-gray-50/70 dark:hover:bg-gray-800/30 ${selected.has(task.id) ? "bg-violet-50/50 dark:bg-violet-500/5" : ""}`}>
                     <td className="px-4 py-3"><input type="checkbox" checked={selected.has(task.id)} onChange={() => toggleOne(task.id)} aria-label={`Select ${task.name}`} className="accent-violet-600" /></td>
@@ -408,6 +482,11 @@ export default function TaskManagement() {
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap text-gray-600 dark:text-gray-300">{formatDate(task.taskDate)}</td>
                     <td className="px-4 py-3 text-gray-600 dark:text-gray-300">{task.companyName || <span className="text-gray-300">Optional</span>}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <span className="inline-flex px-2.5 py-1 rounded-lg border border-violet-200 dark:border-violet-500/20 bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-300 text-xs font-semibold">
+                        {getTaskRoleLabel(task.assignedRoleKey || task.assignedRole)}
+                      </span>
+                    </td>
                     <td className="px-4 py-3 whitespace-nowrap">
                       <p className="font-medium text-gray-700 dark:text-gray-200">{task.createdByName || "Marketing Member"}</p>
                       <p className="text-[10px] text-gray-400">Marketing</p>
@@ -444,7 +523,7 @@ export default function TaskManagement() {
         </div>
       )}
 
-      {editing && <EditTaskModal task={editing} saving={saving} onSave={saveEdit} onClose={() => !saving && setEditing(null)} />}
+      {editing && <EditTaskModal task={editing} saving={saving} canReassign={isMasterAdmin} onSave={saveEdit} onClose={() => !saving && setEditing(null)} />}
     </div>
   );
 }

@@ -7,6 +7,7 @@ import { db } from "../../../Firebase";
 import { COLLECTIONS } from "../../collections";
 import { useAdminDeleteGuard } from "../../Utils/AdminDeleteGuard";
 import { getAdminSession } from "../../Utils/adminSession";
+import { TASK_ROLE_OPTIONS } from "../../Utils/taskManagement";
 
 // ── Tab options (must match Sidebar NAV_ITEMS ids) ─────────────────────────
 const ALL_TABS = [
@@ -24,7 +25,7 @@ const ALL_TABS = [
   { id: "taskmanagement",       label: "Task Management" },
 ];
 
-const ROLES = ["Master Admin", "Admin", "Viewer", "Marketing", "Support"];
+const ROLES = TASK_ROLE_OPTIONS.map((role) => role.label);
 
 const EMPTY_FORM = {
   name: "",
@@ -48,7 +49,7 @@ function validate(form) {
   const e = {};
   if (!form.name.trim())              e.name   = "Name is required";
   if (!/^\d{10}$/.test(form.mobile))  e.mobile = "Must be 10 digits";
-  if (!form.role)                     e.role   = "Select a role";
+  if (!ROLES.includes(form.role))     e.role   = "Select one of the supported admin roles";
   return e;
 }
 
@@ -131,6 +132,7 @@ function AdminModal({ mode, initial, onSave, onClose, saving }) {
   const [form,   setForm]   = useState(initial);
   const [errors, setErrors] = useState({});
   const isEdit = mode === "edit";
+  const hasLegacyRole = Boolean(form.role && !ROLES.includes(form.role));
 
   const set = (field, val) => {
     setForm(p => ({ ...p, [field]: val }));
@@ -175,6 +177,7 @@ function AdminModal({ mode, initial, onSave, onClose, saving }) {
               value={form.role} onChange={e => set("role", e.target.value)}
               className={`w-full border rounded-xl px-3 py-2.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-violet-400 ${errors.role ? "border-red-400" : "border-gray-200"}`}
             >
+              {hasLegacyRole && <option value={form.role}>{form.role} (Legacy — select a new role)</option>}
               {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
             </select>
             {errors.role && <p className="text-red-500 text-xs mt-1">{errors.role}</p>}
@@ -233,9 +236,9 @@ function RoleBadge({ role }) {
   const styles = {
     "Master Admin": "bg-violet-100 text-violet-700",
     "Admin":        "bg-blue-100 text-blue-700",
-    "Marketing":    "bg-amber-100 text-amber-700",
-    "Viewer":       "bg-gray-100 text-gray-600",
-    "Support":      "bg-emerald-100 text-emerald-700",
+    "Developer":    "bg-cyan-100 text-cyan-700",
+    "Template Uploader": "bg-amber-100 text-amber-700",
+    "Designer":     "bg-emerald-100 text-emerald-700",
   };
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold ${styles[role] || "bg-gray-100 text-gray-600"}`}>
