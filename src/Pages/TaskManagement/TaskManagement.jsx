@@ -265,37 +265,65 @@ export default function TaskManagement() {
       setLoading(false);
       return undefined;
     }
+    if (!isMasterAdmin && !admin.uid) {
+      setTasks([]);
+      setError("Your Admin session identity is missing. Logout and login again.");
+      setLoading(false);
+      return undefined;
+    }
 
     setLoading(true);
     setError("");
-    const taskSource = isMasterAdmin
-      ? collection(db, COLLECTIONS.TASKM)
-      : query(
-        collection(db, COLLECTIONS.TASKM),
-        where("assignedRoleKey", "==", adminRoleKey),
-      );
+    const taskCollection = collection(db, COLLECTIONS.TASKM);
+    const taskSources = isMasterAdmin
+      ? [taskCollection]
+      : [
+        query(
+          taskCollection,
+          where("assignedRoleKey", "==", adminRoleKey),
+        ),
+        query(
+          taskCollection,
+          where("createdByUid", "==", admin.uid),
+        ),
+      ];
+    const sourceItems = new Map();
+    const loadedSources = new Set();
 
-    const unsubscribe = onSnapshot(
+    const publishTasks = () => {
+      const mergedTasks = new Map();
+      sourceItems.forEach((items) => {
+        items.forEach((item) => mergedTasks.set(item.id, item));
+      });
+      const items = Array.from(mergedTasks.values());
+      items.sort((a, b) => (b.taskDate || "").localeCompare(a.taskDate || "") || toMillis(b.createdAt) - toMillis(a.createdAt));
+      setTasks(items);
+      setSelected((previous) => {
+        const visibleIds = new Set(items.map((item) => item.id));
+        return new Set(Array.from(previous).filter((id) => visibleIds.has(id)));
+      });
+      if (loadedSources.size === taskSources.length) setLoading(false);
+    };
+
+    const unsubscribes = taskSources.map((taskSource, sourceIndex) => onSnapshot(
       taskSource,
       (snapshot) => {
-        const items = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
-        items.sort((a, b) => (b.taskDate || "").localeCompare(a.taskDate || "") || toMillis(b.createdAt) - toMillis(a.createdAt));
-        setTasks(items);
-        setSelected((previous) => {
-          const visibleIds = new Set(items.map((item) => item.id));
-          return new Set(Array.from(previous).filter((id) => visibleIds.has(id)));
-        });
-        setLoading(false);
+        sourceItems.set(
+          sourceIndex,
+          snapshot.docs.map((item) => ({ id: item.id, ...item.data() })),
+        );
+        loadedSources.add(sourceIndex);
+        publishTasks();
       },
       (taskError) => {
         console.error(taskError);
-        setError("Tasks could not be loaded. Apply the included role-based Firestore rule update and try again.");
+        setError("Tasks could not be loaded. Apply the included creator-visibility Firestore rule update and try again.");
         setLoading(false);
       },
-    );
+    ));
 
-    return unsubscribe;
-  }, [adminRoleKey, canAccess, isMasterAdmin, reloadKey]);
+    return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
+  }, [admin.uid, adminRoleKey, canAccess, isMasterAdmin, reloadKey]);
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -474,7 +502,7 @@ export default function TaskManagement() {
           <p className="text-sm text-gray-400 mt-1">
             {isMasterAdmin
               ? "All role-based tasks created by Marketing and Admin users."
-              : `Tasks assigned to the ${getTaskRoleLabel(adminRoleKey, admin.role || "current")} role.`}
+              : `Tasks assigned to the ${getTaskRoleLabel(adminRoleKey, admin.role || "current")} role, plus tasks created by you.`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -523,12 +551,11 @@ export default function TaskManagement() {
           </select>
           <select
             aria-label="Filter by assigned role"
-            value={isMasterAdmin ? roleFilter : adminRoleKey}
-            disabled={!isMasterAdmin}
+            value={roleFilter}
             onChange={(event) => setRoleFilter(event.target.value)}
-            className="px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-200 disabled:opacity-70 disabled:cursor-not-allowed"
+            className="px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-200"
           >
-            {isMasterAdmin && <option value="">All Roles</option>}
+            <option value="">All Visible Roles</option>
             {TASK_ROLE_OPTIONS.map((role) => <option key={role.key} value={role.key}>{role.label}</option>)}
           </select>
           <input type="date" aria-label="From date" value={dateFrom} max={dateTo || undefined} onChange={(event) => setDateFrom(event.target.value)} className="px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-200" />

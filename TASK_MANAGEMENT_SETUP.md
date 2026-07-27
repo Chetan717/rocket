@@ -42,8 +42,10 @@ VITE_COL_TASKM=Taskm
 
 Master Admin can assign `Task Management` from Admin Management and sees all
 tasks. Every supported Admin user with the `Task Management` tab gets an
-`Add Task` option with role selection. Non-Master Admin users continue to see
-only tasks assigned to their exact role.
+`Add Task` option with role selection. Non-Master Admin users see tasks assigned
+to their exact role plus every task they personally created, including tasks
+they assigned to another Admin role. The page merges both real-time queries and
+removes duplicates, so a task created for the creator's own role appears once.
 
 After a role or tab change, the assigned Admin User must fully **Logout** and
 then log in again. The new login token will contain `taskmanagement`; refreshing

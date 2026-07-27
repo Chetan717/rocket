@@ -52,7 +52,10 @@ function adminTaskAccess(data) {
       request.auth.token.role == 'Master Admin'
       || (
         adminTaskRoleKey() != ''
-        && data.assignedRoleKey == adminTaskRoleKey()
+        && (
+          data.assignedRoleKey == adminTaskRoleKey()
+          || data.createdByUid == request.auth.uid
+        )
       )
     );
 }
@@ -180,8 +183,9 @@ match /Taskm/{taskId} {
 No new composite index is required for the role query. Every supported Admin
 user who has the `Task Management` tab can create a task directly from the Admin
 Task Management page and assign it to any supported Admin role. Master Admin
-continues to see all tasks; other Admin users see tasks assigned to their exact
-role. Existing tasks without
+continues to see all tasks; other Admin users see both tasks assigned to their
+exact role and every task they personally created, even when they assigned that
+task to a different role. Existing tasks without
 `assignedRole` and `assignedRoleKey` remain visible to Master Admin; open and
 save each old task once in Marketing or as Master Admin to assign its role.
 
