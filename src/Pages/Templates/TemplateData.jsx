@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import { db } from "../../../Firebase";
 import { COLLECTIONS } from "../../collections";
 import {
-  getGraphicsStableKey,
+  getTemplateQualityCounts,
   getSubtypeQualityKey,
   hasSelectedCurrentFlag,
   isSubtypeQualityDoc,
@@ -44,35 +44,6 @@ function Pill({ value, color = "gray" }) {
       {value}
     </span>
   );
-}
-
-/**
- * Match the Quality Check modal exactly: graphics links only have OK or Issue.
- * A link without either saved flag stays unselected; it is never counted as OK.
- * Legacy Checked/Working records are normalized by normalizeQualityFlag().
- * Stale checks that belong to deleted graphics links are intentionally ignored.
- */
-function getTemplateQualityCounts(template, qualityDoc) {
-  const links = Array.isArray(template?.GraphicsLink) ? template.GraphicsLink : [];
-  const checks = qualityDoc?.checks && typeof qualityDoc.checks === "object"
-    ? qualityDoc.checks
-    : {};
-  const counts = {
-    graphics: links.length,
-    ok: 0,
-    issues: 0,
-    unselected: 0,
-  };
-
-  links.forEach((link, index) => {
-    const stableKey = getGraphicsStableKey(link, index);
-    const flag = normalizeQualityFlag(checks[stableKey]?.flag);
-    if (flag === "ok") counts.ok += 1;
-    else if (flag === "issue") counts.issues += 1;
-    else counts.unselected += 1;
-  });
-
-  return counts;
 }
 
 function SubtypeStatusBadge({ checked }) {

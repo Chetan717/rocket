@@ -13,6 +13,7 @@ import {
   emptyGraphicsLink,
   getFilterOptions,
 } from "./Constant";
+import { getGraphicsStableKey } from "./qualityUtils";
 
 // ── Style constants ───────────────────────────────────────────────────────────
 export const selectCls =
@@ -83,14 +84,12 @@ function PreviewTile({ src, label }) {
 export function GraphicsLinkRow({
   item,
   idx,
-  total,
   onChange,
   onRemove,
   selType,
   hasIssue,
 }) {
   const [open, setOpen] = useState(idx === 0);
-  const [pass, setPass] = useState(""); // password per-row, local state only
   const { requestDelete, DeleteAuthModal, BlockedToast } = useAdminDeleteGuard();
 
   const update = useCallback(
@@ -115,12 +114,6 @@ export function GraphicsLinkRow({
     : isIncome(selType)
       ? "Add Badge Photo for Income"
       : "Add Badge For Image";
-  const bannerPreviewLabel = isAchievement(selType)
-    ? "Frame For Image"
-    : isIncome(selType)
-      ? "Badge Photo for Income"
-      : "Badge For Image";
-
   return (
     <div className={`rounded-xl overflow-hidden ${hasIssue ? "border-2 border-red-400 dark:border-red-500" : "border border-gray-200 dark:border-gray-700"}`}>
       {/* Header */}
@@ -407,7 +400,7 @@ export function GraphicsLinkRow({
 }
 
 // ── GraphicsLinksField wrapper ────────────────────────────────────────────────
-export function GraphicsLinksField({ items, onChange, selType, issueIndexSet }) {
+export function GraphicsLinksField({ items, onChange, selType, issueKeySet }) {
   const handleFieldChange = useCallback(
     (key, field, val) =>
       onChange(
@@ -457,11 +450,10 @@ export function GraphicsLinksField({ items, onChange, selType, issueIndexSet }) 
             key={item._key}
             item={item}
             idx={idx}
-            total={items.length}
             onChange={handleFieldChange}
             onRemove={handleRemove}
             selType={selType}
-            hasIssue={issueIndexSet?.has(idx)}
+            hasIssue={issueKeySet?.has(getGraphicsStableKey(item, idx))}
           />
         ))}
       </div>

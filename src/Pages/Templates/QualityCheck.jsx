@@ -7,8 +7,8 @@ import {
   getSubtypeQualityDocId,
   getSubtypeQualityKey,
   hasSelectedCurrentFlag,
-  normalizeQualityChecks,
   normalizeQualityFlag,
+  reconcileQualityChecks,
 } from "./qualityUtils";
 
 const FLAGS = {
@@ -166,7 +166,7 @@ export default function QualityCheck({ template, onClose }) {
       .then(([templateSnap, subtypeSnap]) => {
         if (cancelled) return;
         const rawChecks = templateSnap.exists() ? (templateSnap.data().checks || {}) : {};
-        setChecks(normalizeQualityChecks(rawChecks));
+        setChecks(reconcileQualityChecks(links, rawChecks));
         const subtypeData = subtypeSnap.exists() ? subtypeSnap.data() : null;
         setSubtypeChecked(
           typeof subtypeData?.checked === "boolean"
@@ -177,7 +177,7 @@ export default function QualityCheck({ template, onClose }) {
       .catch(console.error)
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [template, templateId, subtypeDocId]);
+  }, [template, templateId, subtypeDocId, links]);
 
   const totalPages = Math.max(1, Math.ceil(links.length / PAGE_SIZE));
   const pageLinks = useMemo(() => {
@@ -210,18 +210,7 @@ export default function QualityCheck({ template, onClose }) {
     setSaving(true);
     setError(null);
     try {
-      const currentChecks = {};
-      links.forEach((link, index) => {
-        const stableKey = getGraphicsStableKey(link, index);
-        const flag = normalizeQualityFlag(checks[stableKey]?.flag);
-        const note = typeof checks[stableKey]?.note === "string" ? checks[stableKey].note : "";
-        if (flag || note.trim()) {
-          currentChecks[stableKey] = {
-            ...(flag ? { flag } : {}),
-            note,
-          };
-        }
-      });
+      const currentChecks = reconcileQualityChecks(links, checks);
 
       const batch = writeBatch(db);
       batch.set(doc(db, COLLECTIONS.TEMPLATEQUALITY, templateId), {

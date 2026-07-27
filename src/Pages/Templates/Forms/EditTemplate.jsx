@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import {
-  collection, doc, getDoc, getDocs, updateDoc, deleteDoc,
+  collection, doc, getDoc, getDocs, deleteDoc,
   serverTimestamp, writeBatch,
 } from "firebase/firestore";
 import { db } from "../../../../Firebase";
@@ -29,6 +29,7 @@ import {
   getSubtypeQualityKey,
   normalizeQualityChecks,
   normalizeQualityFlag,
+  reconcileQualityChecks,
 } from "../qualityUtils";
 
 // ── Small helper components ────────────────────────────────────────────────
@@ -202,12 +203,19 @@ export default function EditTemplate() {
   const [showQCModal,    setShowQCModal]    = useState(false);
   const [pendingFormData,setPendingForm]    = useState(null); // form to save after QC confirm
 
-  // Issue-flagged stableKeys
+  // Only current graphics links participate. Deleted-link flags are pruned,
+  // while old index:id records are migrated to permanent per-link keys.
+  const currentQualityChecks = useMemo(
+    () => reconcileQualityChecks(form?.GraphicsLink, qualityChecks),
+    [form?.GraphicsLink, qualityChecks],
+  );
+
+  // Issue-flagged permanent keys
   const issueKeys = useMemo(() => {
-    return Object.entries(qualityChecks)
+    return Object.entries(currentQualityChecks)
       .filter(([, v]) => normalizeQualityFlag(v.flag) === "issue")
       .map(([k]) => k);
-  }, [qualityChecks]);
+  }, [currentQualityChecks]);
 
   const issueCount = issueKeys.length;
 
@@ -215,11 +223,19 @@ export default function EditTemplate() {
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
+    setQualityLoading(true);
     (async () => {
       try {
-        const snap = await getDoc(doc(db, "mlmtemplate", id));
-        if (!snap.exists()) { setError("Template not found."); return; }
-        const d = snap.data();
+        const [templateSnap, qualitySnap] = await Promise.all([
+          getDoc(doc(db, "mlmtemplate", id)),
+          getDoc(doc(db, COLLECTIONS.TEMPLATEQUALITY, id)),
+        ]);
+        if (!templateSnap.exists()) { setError("Template not found."); return; }
+        const d = templateSnap.data();
+        const normalizedGraphics = normaliseGraphics(d.GraphicsLink);
+        const graphicsLinks = normalizedGraphics.length
+          ? normalizedGraphics
+          : [emptyGraphicsLink()];
         if (!cancelled) {
           setForm({
             MainType:     d.MainType     || "",
@@ -232,32 +248,23 @@ export default function EditTemplate() {
             serial:       d.serial       ?? "",
             Active:       d.Active       ?? false,
             Launched:     d.Launched     ?? true,
-            GraphicsLink: normaliseGraphics(d.GraphicsLink).length
-              ? normaliseGraphics(d.GraphicsLink)
-              : [emptyGraphicsLink()],
+            GraphicsLink: graphicsLinks,
           });
+          const rawChecks = qualitySnap.exists()
+            ? (qualitySnap.data().checks || {})
+            : {};
+          setQualityChecks(reconcileQualityChecks(graphicsLinks, rawChecks));
         }
       } catch (err) {
         console.error(err);
         if (!cancelled) setError("Failed to load template.");
       } finally {
-        if (!cancelled) setFetchLoading(false);
+        if (!cancelled) {
+          setFetchLoading(false);
+          setQualityLoading(false);
+        }
       }
     })();
-    return () => { cancelled = true; };
-  }, [id]);
-
-  // ── Fetch quality data (always, to know if there are issues) ──────────────
-  useEffect(() => {
-    if (!id) return;
-    let cancelled = false;
-    setQualityLoading(true);
-    getDoc(doc(db, COLLECTIONS.TEMPLATEQUALITY, id))
-      .then(snap => {
-        if (!cancelled) setQualityChecks(snap.exists() ? (snap.data().checks || {}) : {});
-      })
-      .catch(console.error)
-      .finally(() => { if (!cancelled) setQualityLoading(false); });
     return () => { cancelled = true; };
   }, [id]);
 
@@ -294,18 +301,15 @@ export default function EditTemplate() {
   const selectTypeOptions = useMemo(() => getSelectTypes(form?.MainType || ""), [form?.MainType]);
   const isFestival = form?.SelectType === "Festival";
 
-  // ── Determine which graphic rows have issues ───────────────────────────────
-  const issueIndexSet = useMemo(() => {
-    const s = new Set();
-    issueKeys.forEach(k => {
-      const idx = parseInt(k.split(":")[0], 10);
-      if (!isNaN(idx)) s.add(idx);
-    });
-    return s;
-  }, [issueKeys]);
+  // ── Determine which exact graphic rows have issues ────────────────────────
+  const issueKeySet = useMemo(() => new Set(issueKeys), [issueKeys]);
 
   // ── Do the actual save to Firestore ───────────────────────────────────────
-  const performSave = useCallback(async (formData) => {
+  const performSave = useCallback(async (
+    formData,
+    checksToSave = currentQualityChecks,
+    markSubtypeChecked = false,
+  ) => {
     setSaveLoading(true);
     setError(null);
     try {
@@ -319,9 +323,37 @@ export default function EditTemplate() {
           incmNameId: Number(rest.incmNameId) || 0,
         };
       });
-      await updateDoc(doc(db, "mlmtemplate", id), {
+      const reconciledChecks = reconcileQualityChecks(
+        cleanGraphics,
+        checksToSave,
+      );
+      const batch = writeBatch(db);
+      batch.update(doc(db, "mlmtemplate", id), {
         ...formData, serial: Number(formData.serial) || 0, GraphicsLink: cleanGraphics, updatedAt: serverTimestamp(),
       });
+      batch.set(doc(db, COLLECTIONS.TEMPLATEQUALITY, id), {
+        templateId: id,
+        recordType: "template",
+        checks: reconciledChecks,
+        updatedAt: serverTimestamp(),
+      });
+
+      if (markSubtypeChecked) {
+        const subtypeKey = getSubtypeQualityKey(formData);
+        const subtypeDocId = getSubtypeQualityDocId(subtypeKey);
+        batch.set(doc(db, COLLECTIONS.TEMPLATEQUALITY, subtypeDocId), {
+          recordType: "subtype",
+          subtypeKey,
+          mainType: formData?.MainType || "",
+          companyId: formData?.MainType === "MLM" ? (formData?.Company || "") : "",
+          selectType: formData?.SelectType || "",
+          subtype: formData?.Subtype || "",
+          checked: true,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      await batch.commit();
       setSuccess(true);
       setTimeout(() => navigate("/templates"), 1200);
     } catch (err) {
@@ -330,43 +362,7 @@ export default function EditTemplate() {
     } finally {
       setSaveLoading(false);
     }
-  }, [id, navigate]);
-
-  // ── Save quality check (mark all issues as OK or keep) ────────────────────
-  const saveQualityStatus = useCallback(async (choice, formData) => {
-    if (!id || issueCount === 0) return;
-    try {
-      let updatedChecks = normalizeQualityChecks(qualityChecks);
-      if (choice === "resolved") {
-        // Mark all "issue" flags as "ok"
-        issueKeys.forEach(k => {
-          updatedChecks[k] = { ...updatedChecks[k], flag: "ok" };
-        });
-      }
-      const subtypeKey = getSubtypeQualityKey(formData);
-      const subtypeDocId = getSubtypeQualityDocId(subtypeKey);
-      const batch = writeBatch(db);
-      batch.set(doc(db, COLLECTIONS.TEMPLATEQUALITY, id), {
-        templateId: id,
-        recordType: "template",
-        checks: updatedChecks,
-        updatedAt: serverTimestamp(),
-      });
-      batch.set(doc(db, COLLECTIONS.TEMPLATEQUALITY, subtypeDocId), {
-        recordType: "subtype",
-        subtypeKey,
-        mainType: formData?.MainType || "",
-        companyId: formData?.MainType === "MLM" ? (formData?.Company || "") : "",
-        selectType: formData?.SelectType || "",
-        subtype: formData?.Subtype || "",
-        checked: true,
-        updatedAt: serverTimestamp(),
-      });
-      await batch.commit();
-    } catch (err) {
-      console.error("Quality update failed", err);
-    }
-  }, [id, qualityChecks, issueKeys, issueCount]);
+  }, [id, navigate, currentQualityChecks]);
 
   // ── handleSubmit: intercept if issues exist ────────────────────────────────
   const handleSubmit = useCallback(async (e) => {
@@ -380,16 +376,21 @@ export default function EditTemplate() {
       return;
     }
 
-    await performSave(form);
-  }, [form, issueCount, performSave]);
+    await performSave(form, currentQualityChecks);
+  }, [form, issueCount, performSave, currentQualityChecks]);
 
   // ── Called after user confirms QC status ──────────────────────────────────
   const handleQCConfirm = useCallback(async (choice) => {
     setShowQCModal(false);
-    await saveQualityStatus(choice, pendingFormData);
-    await performSave(pendingFormData);
+    const updatedChecks = normalizeQualityChecks(currentQualityChecks);
+    if (choice === "resolved") {
+      issueKeys.forEach((key) => {
+        updatedChecks[key] = { ...updatedChecks[key], flag: "ok" };
+      });
+    }
+    await performSave(pendingFormData, updatedChecks, true);
     setPendingForm(null);
-  }, [saveQualityStatus, performSave, pendingFormData]);
+  }, [currentQualityChecks, issueKeys, performSave, pendingFormData]);
 
   const { requestDelete, DeleteAuthModal, BlockedToast } = useAdminDeleteGuard();
 
@@ -546,7 +547,7 @@ export default function EditTemplate() {
                 items={form.GraphicsLink}
                 onChange={setField("GraphicsLink")}
                 selType={form.SelectType}
-                issueIndexSet={issueIndexSet}
+                issueKeySet={issueKeySet}
               />
               <p className="text-xs text-gray-400 mt-3">
                 Fields shown / hidden based on <span className="font-medium text-violet-500">{form.SelectType || "Select Type"}</span>.

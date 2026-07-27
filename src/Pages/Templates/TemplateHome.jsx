@@ -19,6 +19,7 @@ import {
   getTemplateQualityCounts,
   isSubtypeQualityDoc,
   normalizeQualityFlag,
+  reconcileQualityChecks,
 } from "./qualityUtils";
 import { getAdminSession } from "../../Utils/adminSession";
 import IssueFollowup from "./IssueFollowup";
@@ -212,7 +213,10 @@ export default function TemplateHome() {
       if (isSubtypeQualityDoc(qDoc)) return;
       const template = templateMap[qDoc.id];
       if (!template) return;
-      const checks = qDoc.checks || {};
+      const checks = reconcileQualityChecks(
+        template.GraphicsLink,
+        qDoc.checks || {},
+      );
       const issueEntries = Object.entries(checks).filter(([, v]) => normalizeQualityFlag(v.flag) === "issue");
       if (issueEntries.length === 0) return;
       items.push({

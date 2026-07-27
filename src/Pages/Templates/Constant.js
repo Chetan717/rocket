@@ -56,6 +56,7 @@ export const nextId = () => ++_idCounter;
 
 export const emptyGraphicsLink = () => ({
   _key: uid(), // local React key only (not saved to Firestore)
+  qualityId: uid(), // permanent quality-check identity (saved to Firestore)
   id: nextId(), // auto-generated numeric ID — not editable by user
   url: "",
   backgroundVideoUrl: "",

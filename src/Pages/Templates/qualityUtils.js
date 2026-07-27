@@ -28,8 +28,98 @@ export function normalizeQualityChecks(checks) {
   }, {});
 }
 
-export function getGraphicsStableKey(link, index) {
+function hasValue(value) {
+  return value !== undefined
+    && value !== null
+    && String(value).trim() !== "";
+}
+
+function getIdStableKey(link) {
+  if (!hasValue(link?.id)) return "";
+  return `graphic-id:${encodeURIComponent(String(link.id))}`;
+}
+
+function getLegacyGraphicsKey(link, index) {
   return `${index}:${link?.id ?? index}`;
+}
+
+function isLegacyKeyForId(key, id) {
+  if (!hasValue(id) || typeof key !== "string") return false;
+  const separator = key.indexOf(":");
+  if (separator <= 0) return false;
+  const legacyIndex = key.slice(0, separator);
+  return /^\d+$/.test(legacyIndex)
+    && key.slice(separator + 1) === String(id);
+}
+
+/**
+ * Permanent quality identity for one graphics link.
+ *
+ * New and edited links carry qualityId, so deleting/reordering another row
+ * cannot move their OK/Issue status. Existing templates fall back to their
+ * saved graphics id until they are edited and receive a qualityId.
+ */
+export function getGraphicsStableKey(link, index) {
+  if (hasValue(link?.qualityId)) {
+    return `graphic:${encodeURIComponent(String(link.qualityId))}`;
+  }
+  return getIdStableKey(link) || `graphic-index:${index}`;
+}
+
+function getQualityCheckCandidates(checks, link, index) {
+  const currentKey = getGraphicsStableKey(link, index);
+  const idKey = getIdStableKey(link);
+  const exactLegacyKey = getLegacyGraphicsKey(link, index);
+  const indexOnlyLegacyKey = `${index}:${index}`;
+  const candidates = [currentKey];
+
+  if (idKey && idKey !== currentKey) candidates.push(idKey);
+  if (!candidates.includes(exactLegacyKey)) candidates.push(exactLegacyKey);
+  if (!candidates.includes(indexOnlyLegacyKey)) {
+    candidates.push(indexOnlyLegacyKey);
+  }
+
+  // Recover old index:id checks after an earlier row deletion/reorder.
+  // The graphics id, unlike the old index, still identifies the same link.
+  Object.keys(checks).forEach((key) => {
+    if (isLegacyKeyForId(key, link?.id) && !candidates.includes(key)) {
+      candidates.push(key);
+    }
+  });
+
+  return candidates;
+}
+
+export function getQualityCheckForLink(checks, link, index) {
+  const normalized = normalizeQualityChecks(checks);
+  const key = getQualityCheckCandidates(normalized, link, index)
+    .find((candidate) => Object.prototype.hasOwnProperty.call(normalized, candidate));
+  return key ? normalized[key] : undefined;
+}
+
+/**
+ * Keep only checks for links that still exist and rewrite them to permanent
+ * keys. This doubles as a backward-compatible migration for old index:id data.
+ */
+export function reconcileQualityChecks(links, checks) {
+  const currentLinks = Array.isArray(links) ? links : [];
+  const normalized = normalizeQualityChecks(checks);
+  const reconciled = {};
+  const usedSourceKeys = new Set();
+
+  currentLinks.forEach((link, index) => {
+    const sourceKey = getQualityCheckCandidates(normalized, link, index)
+      .find((candidate) => (
+        !usedSourceKeys.has(candidate)
+        && Object.prototype.hasOwnProperty.call(normalized, candidate)
+      ));
+    if (!sourceKey) return;
+
+    reconciled[getGraphicsStableKey(link, index)] = normalized[sourceKey];
+    usedSourceKeys.add(sourceKey);
+  });
+
+  return reconciled;
 }
 
 export function getSubtypeQualityKey(template) {
@@ -56,9 +146,10 @@ export function isSubtypeQualityDoc(value) {
 
 export function hasSelectedCurrentFlag(template, qualityDoc) {
   const links = Array.isArray(template?.GraphicsLink) ? template.GraphicsLink : [];
-  const checks = qualityDoc?.checks && typeof qualityDoc.checks === "object"
+  const rawChecks = qualityDoc?.checks && typeof qualityDoc.checks === "object"
     ? qualityDoc.checks
     : {};
+  const checks = reconcileQualityChecks(links, rawChecks);
 
   return links.some((link, index) => {
     const stableKey = getGraphicsStableKey(link, index);
@@ -73,9 +164,10 @@ export function hasSelectedCurrentFlag(template, qualityDoc) {
  */
 export function getTemplateQualityCounts(template, qualityDoc) {
   const links = Array.isArray(template?.GraphicsLink) ? template.GraphicsLink : [];
-  const checks = qualityDoc?.checks && typeof qualityDoc.checks === "object"
+  const rawChecks = qualityDoc?.checks && typeof qualityDoc.checks === "object"
     ? qualityDoc.checks
     : {};
+  const checks = reconcileQualityChecks(links, rawChecks);
   const counts = {
     graphics: links.length,
     ok: 0,
