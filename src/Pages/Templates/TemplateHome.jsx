@@ -15,7 +15,11 @@ import { COLLECTIONS } from "../../collections";
 import TemplateTable from "./TemplateTable";
 import TemplateDetailPopup from "./TemplateDetailPopup";
 import QualityCheck from "./QualityCheck";
-import { isSubtypeQualityDoc, normalizeQualityFlag } from "./qualityUtils";
+import {
+  getTemplateQualityCounts,
+  isSubtypeQualityDoc,
+  normalizeQualityFlag,
+} from "./qualityUtils";
 import { getAdminSession } from "../../Utils/adminSession";
 import IssueFollowup from "./IssueFollowup";
 
@@ -181,17 +185,22 @@ export default function TemplateHome() {
     fetchQuality();
   }, [fetchQuality]);
 
-  // ── Issue count map: templateId → issue count ─────────────────────────────
-  const issueCountMap = useMemo(() => {
-    const m = {};
-    qualityDocs.forEach(qDoc => {
-      if (isSubtypeQualityDoc(qDoc)) return;
-      const checks = qDoc.checks || {};
-      const count  = Object.values(checks).filter(v => normalizeQualityFlag(v.flag) === "issue").length;
-      if (count > 0) m[qDoc.id] = count;
+  // ── Quality status map: templateId → current OK / Issue counts ────────────
+  const qualityStatusMap = useMemo(() => {
+    const qualityDocMap = {};
+    qualityDocs.forEach((qDoc) => {
+      if (!isSubtypeQualityDoc(qDoc)) qualityDocMap[qDoc.id] = qDoc;
     });
-    return m;
-  }, [qualityDocs]);
+
+    const statusMap = {};
+    allTemplates.forEach((template) => {
+      statusMap[template.id] = getTemplateQualityCounts(
+        template,
+        qualityDocMap[template.id],
+      );
+    });
+    return statusMap;
+  }, [allTemplates, qualityDocs]);
 
   // ── Build issue follow-up list ────────────────────────────────────────────
   const issueItems = useMemo(() => {
@@ -497,7 +506,7 @@ export default function TemplateHome() {
           onSelect={handleSelect}
           filtered={isFiltered}
           companiesMap={companiesMap}
-          issueCountMap={issueCountMap}
+          qualityStatusMap={qualityStatusMap}
           activeTab={activeTab}
           onTabChange={handleTabChange}
         />

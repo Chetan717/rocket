@@ -1,8 +1,20 @@
 # Task Management setup
 
-Task Management uses the Firestore collection `Taskm` directly. No new Cloud Function is required.
+Task Management uses the Firestore collection `Taskm` directly. No new task-writing Cloud Function is required.
 
 Apply `TASK_MANAGEMENT_RULES_UPDATE.md` to the project's existing Firestore rules before deploying the updated panels. The role-based query does not require a new composite index.
+
+The existing Admin login Cloud Function creates the `tabs` claim used by the
+sidebar and Firestore rules. This package includes the corrected
+`functions/index.js`, whose secure allowlist now contains `taskmanagement`.
+Deploy the included functions once after installing their dependencies:
+
+```bash
+cd functions
+npm ci
+cd ..
+firebase deploy --only functions
+```
 
 The collection name defaults to `Taskm`. If this project uses collection-name environment variables, this optional value is supported:
 
@@ -20,11 +32,19 @@ VITE_COL_TASKM=Taskm
 - `assignedRole`: `Master Admin`, `Admin`, `Developer`, `Template Uploader`, or `Designer`
 - `assignedRoleKey`: canonical role key used by the secure Admin query
 - `assignedPanel`: always `admin`
-- `createdByPanel`: always `marketing`
-- `createdByMteamId`, `createdByUid`, `createdByName`: marketing ownership/audit fields
+- `createdByPanel`: `marketing` for Marketing-created tasks or `admin` for Admin-created tasks
+- `createdByMteamId`: Marketing team ID for Marketing-created tasks; empty string for Admin-created tasks
+- `createdByUid`, `createdByName`, `createdByRole`: creator identity and audit fields
 - `createdAt`, `updatedAt`: server timestamps
 - `updatedByUid`, `updatedByName`, `updatedByPanel`: last-update audit fields
 
 ## Admin permission and visibility
 
-Master Admin can assign `Task Management` from Admin Management. Master Admin sees all tasks; other users only see tasks assigned to their exact role. The assigned user must sign in again after a role or tab change so the latest role and tab claims are loaded.
+Master Admin can assign `Task Management` from Admin Management and sees all
+tasks. Every supported Admin user with the `Task Management` tab gets an
+`Add Task` option with role selection. Non-Master Admin users continue to see
+only tasks assigned to their exact role.
+
+After a role or tab change, the assigned Admin User must fully **Logout** and
+then log in again. The new login token will contain `taskmanagement`; refreshing
+the browser alone cannot replace an already-issued permission token.

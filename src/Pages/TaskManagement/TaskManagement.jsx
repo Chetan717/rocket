@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  addDoc,
   collection,
   deleteDoc,
   doc,
@@ -39,6 +40,14 @@ function IconTasks() {
   );
 }
 
+function IconPlus() {
+  return (
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
 function IconEdit() {
   return (
     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -61,6 +70,12 @@ function IconSearch() {
       <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 105 11a6 6 0 0012 0z" />
     </svg>
   );
+}
+
+function localDateValue() {
+  const date = new Date();
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 10);
 }
 
 function toMillis(value) {
@@ -101,34 +116,49 @@ function Pagination({ page, totalPages, onChange }) {
   );
 }
 
-function EditTaskModal({ task, saving, canReassign, onSave, onClose }) {
-  const existingRole = getTaskRole(task.assignedRoleKey || task.assignedRole);
+function TaskFormModal({
+  task = null,
+  saving,
+  canReassign,
+  defaultRoleKey = "admin",
+  onSave,
+  onClose,
+}) {
+  const editing = Boolean(task);
+  const existingRole = getTaskRole(
+    task?.assignedRoleKey || task?.assignedRole,
+    defaultRoleKey,
+  );
   const [form, setForm] = useState({
-    name: task.name || "",
-    taskDate: task.taskDate || "",
-    description: task.description || "",
-    companyName: task.companyName || "",
-    status: STATUSES.includes(task.status) ? task.status : "Initiated",
+    name: task?.name || "",
+    taskDate: task?.taskDate || localDateValue(),
+    description: task?.description || "",
+    companyName: task?.companyName || "",
+    status: STATUSES.includes(task?.status) ? task.status : "Initiated",
     assignedRoleKey: existingRole.key,
   });
   const [error, setError] = useState("");
 
-  const submit = (event) => {
+  const submit = async (event) => {
     event.preventDefault();
     const selectedRole = getTaskRole(form.assignedRoleKey);
     if (!form.name.trim() || !form.taskDate || !form.description.trim() || !normalizeTaskRoleKey(selectedRole.key)) {
       setError("Name, date, description and assigned role are required.");
       return;
     }
-    onSave({
-      name: form.name.trim(),
-      taskDate: form.taskDate,
-      description: form.description.trim(),
-      companyName: form.companyName.trim(),
-      status: form.status,
-      assignedRoleKey: selectedRole.key,
-      assignedRole: selectedRole.label,
-    });
+    try {
+      await onSave({
+        name: form.name.trim(),
+        taskDate: form.taskDate,
+        description: form.description.trim(),
+        companyName: form.companyName.trim(),
+        status: form.status,
+        assignedRoleKey: selectedRole.key,
+        assignedRole: selectedRole.label,
+      });
+    } catch {
+      setError("Task could not be saved. Check access and try again.");
+    }
   };
 
   const set = (field, value) => {
@@ -141,8 +171,12 @@ function EditTaskModal({ task, saving, canReassign, onSave, onClose }) {
       <div className="w-full max-w-xl rounded-2xl bg-white dark:bg-gray-900 shadow-2xl overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800">
           <div>
-            <h2 className="text-lg font-bold text-gray-900 dark:text-white">Edit Task</h2>
-            <p className="text-xs text-gray-400">Updates are visible to the marketing member.</p>
+            <h2 className="text-lg font-bold text-gray-900 dark:text-white">{editing ? "Edit Task" : "Add Task"}</h2>
+            <p className="text-xs text-gray-400">
+              {editing
+                ? "Updates are visible to the assigned Admin role."
+                : "Create a task and send it to the selected Admin role."}
+            </p>
           </div>
           <button type="button" onClick={onClose} className="w-8 h-8 rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800">×</button>
         </div>
@@ -187,7 +221,9 @@ function EditTaskModal({ task, saving, canReassign, onSave, onClose }) {
           {error && <p className="text-xs text-red-500">{error}</p>}
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={onClose} className="px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-sm font-semibold text-gray-600 dark:text-gray-300">Cancel</button>
-            <button type="submit" disabled={saving} className="px-5 py-2.5 rounded-xl bg-violet-600 text-white text-sm font-semibold disabled:opacity-60">{saving ? "Saving…" : "Save Changes"}</button>
+            <button type="submit" disabled={saving} className="px-5 py-2.5 rounded-xl bg-violet-600 text-white text-sm font-semibold disabled:opacity-60">
+              {saving ? "Saving…" : editing ? "Save Changes" : "Create Task"}
+            </button>
           </div>
         </form>
       </div>
@@ -200,6 +236,7 @@ export default function TaskManagement() {
   const adminRoleKey = useMemo(() => normalizeTaskRoleKey(admin.role), [admin.role]);
   const isMasterAdmin = adminRoleKey === "master_admin";
   const canAccess = isMasterAdmin || (admin.assigntab || []).includes("taskmanagement");
+  const canCreateTask = canAccess && Boolean(adminRoleKey);
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -211,6 +248,7 @@ export default function TaskManagement() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [selected, setSelected] = useState(() => new Set());
+  const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -314,6 +352,42 @@ export default function TaskManagement() {
     }
   };
 
+  const createTask = async (payload) => {
+    if (!canCreateTask) {
+      setError("Task Management permission is required to add tasks.");
+      return;
+    }
+
+    setSaving(true);
+    setError("");
+    try {
+      const creatorRole = getTaskRoleLabel(adminRoleKey, admin.role || "Admin");
+      const creatorName = admin.name || creatorRole;
+      await addDoc(collection(db, COLLECTIONS.TASKM), {
+        ...payload,
+        createdByMteamId: "",
+        createdByUid: admin.uid || "",
+        createdByName: creatorName,
+        createdByMobile: "",
+        createdByRole: creatorRole,
+        createdByPanel: "admin",
+        assignedPanel: "admin",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        updatedByUid: admin.uid || "",
+        updatedByName: creatorName,
+        updatedByPanel: "admin",
+      });
+      setCreating(false);
+    } catch (createError) {
+      console.error(createError);
+      setError("Task could not be created. Apply the included Admin create rule and try again.");
+      throw createError;
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const saveEdit = async (payload) => {
     if (!editing) return;
     setSaving(true);
@@ -332,6 +406,7 @@ export default function TaskManagement() {
     } catch (saveError) {
       console.error(saveError);
       setError("Task could not be saved.");
+      throw saveError;
     } finally {
       setSaving(false);
     }
@@ -398,13 +473,27 @@ export default function TaskManagement() {
           </div>
           <p className="text-sm text-gray-400 mt-1">
             {isMasterAdmin
-              ? "All role-based tasks sent by marketing members."
+              ? "All role-based tasks created by Marketing and Admin users."
               : `Tasks assigned to the ${getTaskRoleLabel(adminRoleKey, admin.role || "current")} role.`}
           </p>
         </div>
-        <button type="button" onClick={() => setReloadKey((value) => value + 1)} disabled={loading} className="px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm font-semibold text-gray-600 dark:text-gray-300 disabled:opacity-50">
-          {loading ? "Refreshing…" : "Refresh"}
-        </button>
+        <div className="flex items-center gap-2">
+          {canCreateTask && (
+            <button
+              type="button"
+              onClick={() => {
+                setError("");
+                setCreating(true);
+              }}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700"
+            >
+              <IconPlus /> Add Task
+            </button>
+          )}
+          <button type="button" onClick={() => setReloadKey((value) => value + 1)} disabled={loading} className="px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm font-semibold text-gray-600 dark:text-gray-300 disabled:opacity-50">
+            {loading ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3">
@@ -488,8 +577,12 @@ export default function TaskManagement() {
                       </span>
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap">
-                      <p className="font-medium text-gray-700 dark:text-gray-200">{task.createdByName || "Marketing Member"}</p>
-                      <p className="text-[10px] text-gray-400">Marketing</p>
+                      <p className="font-medium text-gray-700 dark:text-gray-200">
+                        {task.createdByName || (task.createdByPanel === "admin" ? "Master Admin" : "Marketing Member")}
+                      </p>
+                      <p className="text-[10px] text-gray-400">
+                        {task.createdByPanel === "admin" ? (task.createdByRole || "Master Admin") : "Marketing"}
+                      </p>
                     </td>
                     <td className="px-4 py-3">
                       <select value={STATUSES.includes(task.status) ? task.status : "Initiated"} onChange={(event) => updateStatus(task, event.target.value)} className={`px-2.5 py-1.5 rounded-full border text-xs font-semibold outline-none ${STATUS_STYLE[task.status] || STATUS_STYLE.Initiated}`}>
@@ -523,7 +616,24 @@ export default function TaskManagement() {
         </div>
       )}
 
-      {editing && <EditTaskModal task={editing} saving={saving} canReassign={isMasterAdmin} onSave={saveEdit} onClose={() => !saving && setEditing(null)} />}
+      {creating && (
+        <TaskFormModal
+          saving={saving}
+          canReassign
+          defaultRoleKey={adminRoleKey}
+          onSave={createTask}
+          onClose={() => !saving && setCreating(false)}
+        />
+      )}
+      {editing && (
+        <TaskFormModal
+          task={editing}
+          saving={saving}
+          canReassign={isMasterAdmin}
+          onSave={saveEdit}
+          onClose={() => !saving && setEditing(null)}
+        />
+      )}
     </div>
   );
 }

@@ -65,3 +65,31 @@ export function hasSelectedCurrentFlag(template, qualityDoc) {
     return Boolean(normalizeQualityFlag(checks[stableKey]?.flag));
   });
 }
+
+/**
+ * Count only flags that belong to the template's current graphics links.
+ * This keeps the main Template list consistent with Quality Check and avoids
+ * showing stale flags from links that have already been removed.
+ */
+export function getTemplateQualityCounts(template, qualityDoc) {
+  const links = Array.isArray(template?.GraphicsLink) ? template.GraphicsLink : [];
+  const checks = qualityDoc?.checks && typeof qualityDoc.checks === "object"
+    ? qualityDoc.checks
+    : {};
+  const counts = {
+    graphics: links.length,
+    ok: 0,
+    issues: 0,
+    unselected: 0,
+  };
+
+  links.forEach((link, index) => {
+    const stableKey = getGraphicsStableKey(link, index);
+    const flag = normalizeQualityFlag(checks[stableKey]?.flag);
+    if (flag === "ok") counts.ok += 1;
+    else if (flag === "issue") counts.issues += 1;
+    else counts.unselected += 1;
+  });
+
+  return counts;
+}

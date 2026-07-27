@@ -1,4 +1,4 @@
-import { memo, useMemo, useState, useEffect } from "react";
+import { memo, useMemo, useState } from "react";
 import { Ellipsis } from "@gravity-ui/icons";
 import { Pagination } from "./TempHome";
 
@@ -32,6 +32,14 @@ function Tab({ label, count, active, onClick, color }) {
   );
 }
 
+function TableHeader({ children, className = "" }) {
+  return (
+    <th className={`px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 whitespace-nowrap ${className}`}>
+      {children}
+    </th>
+  );
+}
+
 function StatusPill({ value, yes = "Active", no = "Inactive" }) {
   return (
     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${
@@ -45,13 +53,29 @@ function StatusPill({ value, yes = "Active", no = "Inactive" }) {
   );
 }
 
-function IssuePill({ count }) {
-  if (!count) return <span className="text-gray-300 dark:text-gray-600 text-[11px]">—</span>;
+function QualityStatusPills({ quality }) {
+  const okCount = quality?.ok || 0;
+  const issueCount = quality?.issues || 0;
+
+  if (!okCount && !issueCount) {
+    return <span className="text-gray-300 dark:text-gray-600 text-[11px]">—</span>;
+  }
+
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-500/20 text-[10px] font-bold">
-      <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-      {count}
-    </span>
+    <div className="flex items-center justify-center gap-1.5 flex-wrap min-w-[112px]">
+      {okCount > 0 && (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20 text-[10px] font-bold whitespace-nowrap">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+          OK {okCount}
+        </span>
+      )}
+      {issueCount > 0 && (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-500/20 text-[10px] font-bold whitespace-nowrap">
+          <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+          Issue {issueCount}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -75,25 +99,16 @@ function EmptyState({ filtered, type }) {
   );
 }
 
-const SectionTable = memo(function SectionTable({ templates, onSelect, filtered, type, companiesMap, issueCountMap }) {
+const SectionTable = memo(function SectionTable({ templates, onSelect, filtered, type, companiesMap, qualityStatusMap }) {
   const [page, setPage] = useState(1);
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(templates.length / PAGE_SIZE)), [templates]);
-
-  useEffect(() => {
-    setPage((p) => (p > Math.max(1, Math.ceil(templates.length / PAGE_SIZE)) ? 1 : p));
-  }, [templates]);
+  const currentPage = Math.min(page, totalPages);
 
   const paginated = useMemo(() => {
-    const start = (page - 1) * PAGE_SIZE;
+    const start = (currentPage - 1) * PAGE_SIZE;
     return templates.slice(start, start + PAGE_SIZE);
-  }, [templates, page]);
-
-  const TH = ({ children, className = "" }) => (
-    <th className={`px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 whitespace-nowrap ${className}`}>
-      {children}
-    </th>
-  );
+  }, [templates, currentPage]);
 
   return (
     <div className="space-y-3">
@@ -102,16 +117,16 @@ const SectionTable = memo(function SectionTable({ templates, onSelect, filtered,
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 dark:bg-gray-800/60 border-b border-gray-100 dark:border-gray-800">
-                <TH>#</TH>
-                <TH>Company Name</TH>
-                <TH>Type</TH>
-                <TH>Select Type</TH>
-                <TH>Subtype</TH>
-                <TH>Date</TH>
-                <TH className="text-center">Graphics</TH>
-                <TH className="text-center">Active</TH>
-                <TH className="text-center">Launched</TH>
-                <TH className="text-center">Issues</TH>
+                <TableHeader>#</TableHeader>
+                <TableHeader>Company Name</TableHeader>
+                <TableHeader>Type</TableHeader>
+                <TableHeader>Select Type</TableHeader>
+                <TableHeader>Subtype</TableHeader>
+                <TableHeader>Date</TableHeader>
+                <TableHeader className="text-center">Graphics</TableHeader>
+                <TableHeader className="text-center">Active</TableHeader>
+                <TableHeader className="text-center">Launched</TableHeader>
+                <TableHeader className="text-center">Quality Status</TableHeader>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
@@ -119,7 +134,7 @@ const SectionTable = memo(function SectionTable({ templates, onSelect, filtered,
                 <EmptyState filtered={filtered} type={type} />
               ) : paginated.map((tpl, i) => {
                 const companyName = companiesMap?.[tpl.Company] || tpl.Company || "—";
-                const issueCount  = issueCountMap?.[tpl.id] || 0;
+                const quality = qualityStatusMap?.[tpl.id];
                 return (
                   <tr
                     key={tpl.id}
@@ -127,7 +142,7 @@ const SectionTable = memo(function SectionTable({ templates, onSelect, filtered,
                     className="hover:bg-violet-50/40 dark:hover:bg-violet-500/5 cursor-pointer transition-colors"
                   >
                     <td className="px-4 py-3 text-gray-400 dark:text-gray-500 text-[11px]">
-                      {(page - 1) * PAGE_SIZE + i + 1}
+                      {(currentPage - 1) * PAGE_SIZE + i + 1}
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-700 dark:text-gray-300 whitespace-nowrap font-medium">
                       {companyName}
@@ -158,7 +173,7 @@ const SectionTable = memo(function SectionTable({ templates, onSelect, filtered,
                       <StatusPill value={tpl.Launched} yes="Launched" no="Draft" />
                     </td>
                     <td className="px-4 py-3 text-center">
-                      <IssuePill count={issueCount} />
+                      <QualityStatusPills quality={quality} />
                     </td>
                   </tr>
                 );
@@ -167,7 +182,7 @@ const SectionTable = memo(function SectionTable({ templates, onSelect, filtered,
           </table>
         </div>
       </div>
-      <Pagination currentPage={page} totalPages={totalPages} onPageChange={setPage} />
+      <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setPage} />
     </div>
   );
 });
@@ -178,7 +193,7 @@ export default function TemplateTable({
   onSelect,
   filtered,
   companiesMap,
-  issueCountMap,
+  qualityStatusMap,
   activeTab,
   onTabChange,
 }) {
@@ -215,7 +230,7 @@ export default function TemplateTable({
         filtered={filtered}
         type={activeTab}
         companiesMap={companiesMap}
-        issueCountMap={issueCountMap}
+        qualityStatusMap={qualityStatusMap}
       />
     </div>
   );

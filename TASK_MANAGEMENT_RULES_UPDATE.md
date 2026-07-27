@@ -1,6 +1,9 @@
 # Firestore Task Management rule update
 
-This feature still writes directly to the `Taskm` collection. It does not need a new Cloud Function.
+This feature still writes directly to the `Taskm` collection. It does not need a
+new task-writing Cloud Function. The existing Admin login functions must still
+be deployed from this package so the login token allowlist includes
+`taskmanagement`.
 
 In the existing Firestore rules, replace the old `marketingTaskAccess()`, `validTask()` and `match /Taskm/{taskId}` blocks with the blocks below. Keep the project's other collection rules unchanged.
 
@@ -54,6 +57,37 @@ function adminTaskAccess(data) {
     );
 }
 
+function validAdminTaskCreator(data) {
+  return adminTab('taskmanagement')
+    && adminTaskRoleKey() != ''
+    && data.createdByMteamId == ''
+    && data.createdByUid == request.auth.uid
+    && data.createdByName == request.auth.token.name
+    && data.createdByPanel == 'admin'
+    && (
+      (
+        adminTaskRoleKey() == 'master_admin'
+        && data.createdByRole == 'Master Admin'
+      )
+      || (
+        adminTaskRoleKey() == 'admin'
+        && data.createdByRole == 'Admin'
+      )
+      || (
+        adminTaskRoleKey() == 'developer'
+        && data.createdByRole == 'Developer'
+      )
+      || (
+        adminTaskRoleKey() == 'template_uploader'
+        && data.createdByRole == 'Template Uploader'
+      )
+      || (
+        adminTaskRoleKey() == 'designer'
+        && data.createdByRole == 'Designer'
+      )
+    );
+}
+
 match /Taskm/{taskId} {
   allow read: if adminTaskAccess(resource.data)
     || (
@@ -61,11 +95,18 @@ match /Taskm/{taskId} {
       && resource.data.createdByMteamId == request.auth.token.mteamId
     );
 
-  allow create: if marketingTaskAccess()
-    && validTask(request.resource.data)
-    && request.resource.data.createdByMteamId == request.auth.token.mteamId
-    && request.resource.data.createdByUid == request.auth.uid
-    && request.resource.data.createdByPanel == 'marketing';
+  allow create: if validTask(request.resource.data)
+    && (
+      (
+        marketingTaskAccess()
+        && request.resource.data.createdByMteamId == request.auth.token.mteamId
+        && request.resource.data.createdByUid == request.auth.uid
+        && request.resource.data.createdByPanel == 'marketing'
+      )
+      || (
+        validAdminTaskCreator(request.resource.data)
+      )
+    );
 
   allow update: if validTask(request.resource.data)
     && request.resource.data.createdByMteamId == resource.data.createdByMteamId
@@ -136,4 +177,14 @@ match /Taskm/{taskId} {
 }
 ```
 
-No new composite index is required for the role query. Existing tasks without `assignedRole` and `assignedRoleKey` remain visible to Master Admin; open and save each old task once in Marketing or as Master Admin to assign its role.
+No new composite index is required for the role query. Every supported Admin
+user who has the `Task Management` tab can create a task directly from the Admin
+Task Management page and assign it to any supported Admin role. Master Admin
+continues to see all tasks; other Admin users see tasks assigned to their exact
+role. Existing tasks without
+`assignedRole` and `assignedRoleKey` remain visible to Master Admin; open and
+save each old task once in Marketing or as Master Admin to assign its role.
+
+After publishing these rules and deploying the included functions, affected
+Admin Users must fully logout and login once. A browser refresh alone keeps the
+old token claims.
