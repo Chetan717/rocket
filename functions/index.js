@@ -13,7 +13,7 @@ const TWOFACTOR_API_KEY = defineSecret("TWOFACTOR_API_KEY");
 const REGION = "asia-south1";
 const SESSION_MS = 10 * 60 * 60 * 1000;
 const OTP_MS = 5 * 60 * 1000;
-const OWNER_TABS = ["dashboard","companies","templates","templates_operation","templates_quality","Graphics","marketing","removebg","userdashboard","leads","adminmanagement","templatedata","security"];
+const OWNER_TABS = ["dashboard","companies","templates","templates_operation","templates_quality","Graphics","marketing","removebg","userdashboard","leads","adminmanagement","templatedata","taskmanagement","security"];
 
 const mobile10 = value => String(value || "").replace(/\D/g, "").slice(-10);
 const hash = value => crypto.createHash("sha256").update(String(value)).digest("hex");
