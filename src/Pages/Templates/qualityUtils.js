@@ -70,14 +70,10 @@ function getQualityCheckCandidates(checks, link, index) {
   const currentKey = getGraphicsStableKey(link, index);
   const idKey = getIdStableKey(link);
   const exactLegacyKey = getLegacyGraphicsKey(link, index);
-  const indexOnlyLegacyKey = `${index}:${index}`;
   const candidates = [currentKey];
 
   if (idKey && idKey !== currentKey) candidates.push(idKey);
   if (!candidates.includes(exactLegacyKey)) candidates.push(exactLegacyKey);
-  if (!candidates.includes(indexOnlyLegacyKey)) {
-    candidates.push(indexOnlyLegacyKey);
-  }
 
   // Recover old index:id checks after an earlier row deletion/reorder.
   // The graphics id, unlike the old index, still identifies the same link.
@@ -119,6 +115,24 @@ export function reconcileQualityChecks(links, checks) {
     usedSourceKeys.add(sourceKey);
   });
 
+  return reconciled;
+}
+
+/**
+ * Remove only the quality record owned by the row being deleted.
+ *
+ * Reconcile against the complete pre-delete list first. This is important for
+ * legacy index:id records: once a row has been removed, its old list position
+ * must never be considered a candidate for the previous or next row.
+ */
+export function removeQualityCheckForLink(
+  links,
+  checks,
+  removedLink,
+  removedIndex,
+) {
+  const reconciled = reconcileQualityChecks(links, checks);
+  delete reconciled[getGraphicsStableKey(removedLink, removedIndex)];
   return reconciled;
 }
 

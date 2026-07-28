@@ -54,6 +54,14 @@ export const uid = () => Math.random().toString(36).slice(2, 9);
 let _idCounter = Date.now();
 export const nextId = () => ++_idCounter;
 
+export const RANK_PROMOTION_TYPES = [
+  "Rank_Promotion",
+  "Rank_Promotion_B",
+];
+
+export const isRankPromotionType = (selectType) =>
+  RANK_PROMOTION_TYPES.includes(selectType);
+
 export const emptyGraphicsLink = () => ({
   _key: uid(), // local React key only (not saved to Firestore)
   qualityId: uid(), // permanent quality-check identity (saved to Firestore)

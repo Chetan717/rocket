@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   getTemplateQualityCounts,
   getGraphicsStableKey,
+  removeQualityCheckForLink,
   reconcileQualityChecks,
 } from "../src/Pages/Templates/qualityUtils.js";
 
@@ -109,6 +110,25 @@ test("deleting an issue link does not move its red Issue flag to the next link",
       getGraphicsStableKey(originalLinks[1], 1),
     ),
     false,
+  );
+});
+
+test("deleted zero-based legacy index is not reassigned to the next link", () => {
+  const deletedIssueLink = { id: 33, qualityId: "quality-33" };
+  const nextLink = { id: 34, qualityId: "quality-34" };
+  const legacyChecks = {
+    "33:33": { flag: "issue", note: "Deleted graphics problem" },
+  };
+
+  assert.deepEqual(reconcileQualityChecks([nextLink], legacyChecks), {});
+  assert.deepEqual(
+    removeQualityCheckForLink(
+      [deletedIssueLink, nextLink],
+      legacyChecks,
+      deletedIssueLink,
+      0,
+    ),
+    {},
   );
 });
 

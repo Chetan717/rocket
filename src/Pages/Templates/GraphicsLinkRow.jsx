@@ -12,6 +12,7 @@ import {
   POSITION_OPTIONS,
   emptyGraphicsLink,
   getFilterOptions,
+  isRankPromotionType,
 } from "./Constant";
 import { getGraphicsStableKey } from "./qualityUtils";
 
@@ -34,9 +35,6 @@ export function FieldLabel({ children, required }) {
 const isAchievement = (t) =>
   t === "Achievements" || t === "Achievements_B" ;
 const isIncome = (t) => t === "Income";
-
-// show "Upload Rank Name Image" only for Rank Promotion
-const isRankPromotion = (t) => t === "Rank_Promotion";
 
 // hide bannerId for these types
 const HIDE_BANNER = [
@@ -99,7 +97,7 @@ export function GraphicsLinkRow({
 
   // ── Derived from selType ──────────────────────────────────────────────────
   const canShowNameImage = isAchievement(selType) || isIncome(selType);
-  const canShowRankNameImage = isRankPromotion(selType);
+  const canShowRankNameImage = isRankPromotionType(selType);
   const canShowBannerId = showBannerId(selType);
   const canShowPosition = showPosition(selType);
   const filterOptions = getFilterOptions(selType);
@@ -400,7 +398,13 @@ export function GraphicsLinkRow({
 }
 
 // ── GraphicsLinksField wrapper ────────────────────────────────────────────────
-export function GraphicsLinksField({ items, onChange, selType, issueKeySet }) {
+export function GraphicsLinksField({
+  items,
+  onChange,
+  selType,
+  issueKeySet,
+  onItemRemove,
+}) {
   const handleFieldChange = useCallback(
     (key, field, val) =>
       onChange(
@@ -422,10 +426,13 @@ export function GraphicsLinksField({ items, onChange, selType, issueKeySet }) {
     ]);
   }, [items, onChange, selType]);
 
-  const handleRemove = useCallback(
-    (key) => onChange(items.filter((i) => i._key !== key)),
-    [items, onChange],
-  );
+  const handleRemove = useCallback((key) => {
+    const removedIndex = items.findIndex((item) => item._key === key);
+    if (removedIndex < 0) return;
+
+    onItemRemove?.(items[removedIndex], removedIndex);
+    onChange(items.filter((item) => item._key !== key));
+  }, [items, onChange, onItemRemove]);
 
   return (
     <div className="flex flex-col gap-3">

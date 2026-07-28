@@ -29,6 +29,7 @@ import {
   getSubtypeQualityKey,
   normalizeQualityChecks,
   normalizeQualityFlag,
+  removeQualityCheckForLink,
   reconcileQualityChecks,
 } from "../qualityUtils";
 
@@ -304,6 +305,18 @@ export default function EditTemplate() {
   // ── Determine which exact graphic rows have issues ────────────────────────
   const issueKeySet = useMemo(() => new Set(issueKeys), [issueKeys]);
 
+  // Remove the deleted row's quality record while the complete pre-delete
+  // graphics list is still available. This prevents legacy index-based flags
+  // from being reassigned to the previous or next row in the same render.
+  const handleGraphicsItemRemove = useCallback((removedItem, removedIndex) => {
+    setQualityChecks((previousChecks) => removeQualityCheckForLink(
+      form?.GraphicsLink,
+      previousChecks,
+      removedItem,
+      removedIndex,
+    ));
+  }, [form?.GraphicsLink]);
+
   // ── Do the actual save to Firestore ───────────────────────────────────────
   const performSave = useCallback(async (
     formData,
@@ -548,6 +561,7 @@ export default function EditTemplate() {
                 onChange={setField("GraphicsLink")}
                 selType={form.SelectType}
                 issueKeySet={issueKeySet}
+                onItemRemove={handleGraphicsItemRemove}
               />
               <p className="text-xs text-gray-400 mt-3">
                 Fields shown / hidden based on <span className="font-medium text-violet-500">{form.SelectType || "Select Type"}</span>.

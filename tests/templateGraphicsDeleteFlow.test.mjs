@@ -39,3 +39,9 @@ test("Template save atomically prunes deleted quality checks", () => {
     /const checks = reconcileQualityChecks\(/,
   );
 });
+
+test("Edit Template removes the exact row quality record before changing the list", () => {
+  assert.match(editTemplateSource, /removeQualityCheckForLink\(/);
+  assert.match(editTemplateSource, /onItemRemove=\{handleGraphicsItemRemove\}/);
+  assert.match(graphicsRowsSource, /onItemRemove\?\.\(items\[removedIndex\], removedIndex\)/);
+});
