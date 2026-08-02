@@ -1,16 +1,25 @@
+/* global require, exports, Buffer */
+
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onDocumentWritten } = require("firebase-functions/v2/firestore");
 const { initializeApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { FieldValue, Timestamp, getFirestore } = require("firebase-admin/firestore");
+const { getStorage } = require("firebase-admin/storage");
 const { defineSecret } = require("firebase-functions/params");
 const crypto = require("crypto");
 const { promisify } = require("util");
+const {
+  getRemovedTemplateStoragePaths,
+  getUnreferencedTemplateStoragePaths,
+} = require("./templateStorageCleanup");
 
 initializeApp();
 const db = getFirestore();
 const scrypt = promisify(crypto.scrypt);
 const TWOFACTOR_API_KEY = defineSecret("TWOFACTOR_API_KEY");
 const REGION = "asia-south1";
+const TEMPLATE_STORAGE_CLEANUP_REGION = "us-central1";
 const SESSION_MS = 10 * 60 * 60 * 1000;
 const OTP_MS = 5 * 60 * 1000;
 const OWNER_TABS = ["dashboard","companies","templates","templates_operation","templates_quality","Graphics","marketing","removebg","userdashboard","leads","adminmanagement","templatedata","taskmanagement","security"];
@@ -79,7 +88,7 @@ async function sendOtp(mobile, otp) {
     const response = await fetch(`https://2factor.in/API/V1/${encodeURIComponent(key)}/SMS/+91${mobile}/${otp}/OTP`, { signal: AbortSignal.timeout(10000) });
     const body = await response.json();
     if (!response.ok || body?.Status !== "Success") throw new Error("send failed");
-  } catch (_) { throw new HttpsError("unavailable", "OTP could not be sent right now."); }
+  } catch { throw new HttpsError("unavailable", "OTP could not be sent right now."); }
 }
 async function createChallenge(mobile, ownerId) {
   const otp = crypto.randomInt(1000, 10000).toString();
@@ -131,6 +140,96 @@ async function requireSession(request) {
   if (!snap.exists || snap.data().panel !== "admin" || snap.data().revoked === true || snap.data().expiresAt.toMillis() <= Date.now()) throw new HttpsError("unauthenticated", "Session expired.");
   return { ref, data: snap.data() };
 }
+
+async function deleteTemplateStoragePaths(bucket, paths) {
+  const failures = [];
+  const batchSize = 20;
+
+  for (let index = 0; index < paths.length; index += batchSize) {
+    const batch = paths.slice(index, index + batchSize);
+    const results = await Promise.allSettled(
+      batch.map((path) => bucket.file(path).delete({ ignoreNotFound: true })),
+    );
+
+    results.forEach((result, resultIndex) => {
+      if (result.status === "rejected") {
+        failures.push({
+          path: batch[resultIndex],
+          reason: result.reason,
+        });
+      }
+    });
+  }
+
+  if (failures.length) {
+    console.error("Template Storage cleanup failed", {
+      failedObjects: failures.map(({ path }) => path),
+    });
+    throw failures[0].reason;
+  }
+}
+
+/**
+ * Storage cleanup is server-owned so it works for every authorised Admin role
+ * and every UI/code path that updates or deletes an mlmtemplate document.
+ */
+exports.cleanupTemplateStorageOnWrite = onDocumentWritten(
+  {
+    document: "mlmtemplate/{templateId}",
+    region: TEMPLATE_STORAGE_CLEANUP_REGION,
+    retry: true,
+  },
+  async (event) => {
+    const beforeSnapshot = event.data?.before;
+    const afterSnapshot = event.data?.after;
+
+    // Creates cannot make an existing Storage object orphaned.
+    if (!beforeSnapshot?.exists) return;
+
+    const beforeData = beforeSnapshot.data() || {};
+    const afterData = afterSnapshot?.exists ? (afterSnapshot.data() || {}) : {};
+    const bucket = getStorage().bucket();
+    const removedPaths = getRemovedTemplateStoragePaths(
+      beforeData,
+      afterData,
+      bucket.name,
+    );
+
+    let deletedCount = 0;
+    let sharedCount = 0;
+
+    if (removedPaths.length) {
+      // A Storage URL can be intentionally reused. Scan the current template
+      // documents and delete only objects that have no remaining reference.
+      const currentTemplatesSnapshot = await db.collection("mlmtemplate").get();
+      const currentTemplates = currentTemplatesSnapshot.docs.map((document) => (
+        document.data()
+      ));
+      const unreferencedPaths = getUnreferencedTemplateStoragePaths(
+        removedPaths,
+        currentTemplates,
+        bucket.name,
+      );
+
+      await deleteTemplateStoragePaths(bucket, unreferencedPaths);
+      deletedCount = unreferencedPaths.length;
+      sharedCount = removedPaths.length - deletedCount;
+    }
+
+    // The per-template quality document must not remain after full deletion.
+    if (!afterSnapshot?.exists) {
+      await db.collection("templatequality").doc(event.params.templateId).delete();
+    }
+
+    console.info("Template Storage cleanup complete", {
+      templateId: event.params.templateId,
+      removedReferences: removedPaths.length,
+      deletedObjects: deletedCount,
+      retainedSharedObjects: sharedCount,
+      templateDeleted: !afterSnapshot?.exists,
+    });
+  },
+);
 
 exports.panelStartTwoFactorOtp = onCall({ region: REGION, cors: true, secrets: [TWOFACTOR_API_KEY] }, async request => {
   const mobile = mobile10(request.data?.mobile);
@@ -186,13 +285,13 @@ exports.panelRevokeSession = onCall({ region: REGION, cors: true }, async reques
   const target = await db.collection("_panelSessions").doc(id).get();
   if (!target.exists || target.data().ownerId !== data.ownerId || (request.auth.token.actorType !== "owner" && target.data().actorId !== data.actorId)) throw new HttpsError("permission-denied", "Not authorised.");
   await target.ref.update({ revoked: true, revokedAt: FieldValue.serverTimestamp(), expiresAt: Timestamp.fromMillis(0) });
-  try { await getAuth().revokeRefreshTokens(id); } catch (_) { /* session denial is immediate */ }
+  try { await getAuth().revokeRefreshTokens(id); } catch { /* session denial is immediate */ }
   return { ok: true, current: id === request.auth.uid };
 });
 exports.panelLogout = onCall({ region: REGION, cors: true }, async request => {
   if (!request.auth?.uid) throw new HttpsError("unauthenticated", "Not signed in.");
   await db.collection("_panelSessions").doc(request.auth.uid).delete();
-  try { await getAuth().revokeRefreshTokens(request.auth.uid); } catch (_) { /* deleted session denies access */ }
+  try { await getAuth().revokeRefreshTokens(request.auth.uid); } catch { /* deleted session denies access */ }
   return { ok: true };
 });
 exports.purgeLegacyPanelSecrets = onCall({ region: REGION, cors: true }, async request => {
