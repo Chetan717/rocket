@@ -1,14 +1,48 @@
-# Secure OTP panel deployment
+# Secure Admin email OTP deployment
 
-1. Firebase Phone Auth is not used. OTP is delivered only through the server-side 2Factor.in account.
-2. Ensure exactly one active `adminuser` document has the owner's 10-digit `mobile` and role `Master Admin`.
-3. Install the CLI and authenticate: `npm i -g firebase-tools` then `firebase login`.
-4. Select the project: `firebase use --add`.
-5. Install backend dependencies: `cd functions && npm install && cd ..`.
-6. The existing server secret `TWOFACTOR_API_KEY` is used. Never add it to a `VITE_` variable.
-7. Manually merge the supplied rule blocks into production; do not overwrite your existing rules/indexes.
-8. Deploy only this panel's named callables: `firebase deploy --only functions:panelStartTwoFactorOtp,functions:panelVerifyTwoFactorOtp,functions:panelCreateSessionFromTwoFactor,functions:panelLogout,functions:purgeLegacyPanelSecrets`.
-9. Add all `.env.example` values to the frontend host, then run `npm install --legacy-peer-deps && npm run build`.
-10. On the owner's first successful OTP login, legacy admin PINs and embedded marketing passwords are purged and legacy admin sub-users are linked to that owner.
+## What changed
 
-Sub-users never request their own OTP. The owner verifies OTP and then chooses an active delegated account. Panel credentials use in-memory persistence, so refresh/close requires OTP again.
+- Admin login no longer asks for or sends an OTP to a mobile number.
+- Nodemailer sends a 6-digit OTP through Gmail SMTP.
+- Every Admin login OTP goes only to the fixed recipient `mlmliveapp@gmail.com`.
+- The SMTP sender is `soilbooster717@gmail.com`.
+- Existing Admin account selection, strong passwords, roles/tabs, sessions and login activity remain unchanged.
+- The old callable IDs are intentionally retained so deployment overwrites and disables the previously deployed SMS implementation.
+
+## Secret setup
+
+Never place the Gmail App Password in source code, a frontend variable, `.env` committed to the project, or this ZIP. Store it as a Firebase Secret:
+
+```bash
+firebase functions:secrets:set EMAIL_PASS
+```
+
+When prompted, enter the Gmail App Password. `EMAIL_NODEMAILER` defaults to `soilbooster717@gmail.com` in the backend parameter configuration.
+
+The Gmail sender account must have 2-Step Verification enabled and the credential must be an App Password, not the normal Gmail password.
+
+## Deploy
+
+From the project root:
+
+```bash
+cd functions
+npm ci
+cd ..
+firebase deploy --only functions:panelStartTwoFactorOtp,functions:panelVerifyTwoFactorOtp,functions:panelCreateSessionFromTwoFactor
+npm install --legacy-peer-deps
+npm run build
+firebase deploy --only hosting
+```
+
+Deploying the three named Functions is required. It replaces the old SMS code at the same endpoints, so `TWOFACTOR_API_KEY` is no longer read and Admin SMS OTP charges stop.
+
+## Expected login flow
+
+1. Open Admin login and click **Send Email OTP**.
+2. A 6-digit OTP is sent to the fixed Admin mailbox.
+3. Verify it within 5 minutes.
+4. Select the active Admin account and enter its strong password.
+5. Refresh uses the existing password unlock flow; it does not send another OTP.
+
+Exactly one active `adminuser` document must have role `Master Admin`. OTP resend has a 60-second cooldown, is limited to 3 sends per 10 minutes, and verification allows at most 5 incorrect attempts.

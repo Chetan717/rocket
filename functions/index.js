@@ -6,9 +6,15 @@ const { initializeApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { FieldValue, Timestamp, getFirestore } = require("firebase-admin/firestore");
 const { getStorage } = require("firebase-admin/storage");
-const { defineSecret } = require("firebase-functions/params");
+const { defineSecret, defineString } = require("firebase-functions/params");
+const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const { promisify } = require("util");
+const {
+  ADMIN_OTP_RECIPIENT,
+  MASKED_ADMIN_OTP_RECIPIENT,
+  buildAdminOtpMessage,
+} = require("./adminEmailOtp");
 const {
   getRemovedTemplateStoragePaths,
   getUnreferencedTemplateStoragePaths,
@@ -17,14 +23,16 @@ const {
 initializeApp();
 const db = getFirestore();
 const scrypt = promisify(crypto.scrypt);
-const TWOFACTOR_API_KEY = defineSecret("TWOFACTOR_API_KEY");
+const EMAIL_PASS = defineSecret("EMAIL_PASS");
+const EMAIL_NODEMAILER = defineString("EMAIL_NODEMAILER", {
+  default: "soilbooster717@gmail.com",
+});
 const REGION = "asia-south1";
 const TEMPLATE_STORAGE_CLEANUP_REGION = "us-central1";
 const SESSION_MS = 10 * 60 * 60 * 1000;
 const OTP_MS = 5 * 60 * 1000;
 const OWNER_TABS = ["dashboard","companies","templates","templates_operation","templates_quality","Graphics","marketing","removebg","userdashboard","leads","adminmanagement","templatedata","taskmanagement","security"];
 
-const mobile10 = value => String(value || "").replace(/\D/g, "").slice(-10);
 const hash = value => crypto.createHash("sha256").update(String(value)).digest("hex");
 const safeTabs = tabs => Array.isArray(tabs) ? [...new Set(tabs.filter(x => OWNER_TABS.includes(x)))].slice(0, 20) : [];
 const cleanText = (value, max = 120) => String(value || "").replace(/[<>]/g, "").trim().slice(0, max);
@@ -60,10 +68,19 @@ async function rateLimit(bucket, key, max, windowMs) {
     tx.set(ref, { bucket, count: count + 1, windowStart: same ? data.windowStart : now, expiresAt: Timestamp.fromMillis(now + windowMs) });
   });
 }
-async function ownerFor(mobile) {
-  const snap = await db.collection("adminuser").where("mobile", "==", mobile).limit(10).get();
-  const owner = snap.docs.find(d => d.data().active === true && d.data().role === "Master Admin");
-  if (!owner) throw new HttpsError("permission-denied", "Not authorised.");
+async function ownerForEmailLogin() {
+  const snap = await db.collection("adminuser").where("role", "==", "Master Admin").limit(10).get();
+  const owners = snap.docs.filter(d => d.data().active === true);
+  if (owners.length !== 1) {
+    throw new HttpsError("failed-precondition", "Exactly one active Master Admin is required.");
+  }
+  return owners[0];
+}
+async function ownerForId(ownerId) {
+  const owner = await db.collection("adminuser").doc(String(ownerId || "")).get();
+  if (!owner.exists || owner.data().active !== true || owner.data().role !== "Master Admin") {
+    throw new HttpsError("permission-denied", "Not authorised.");
+  }
   return owner;
 }
 async function actorsFor(owner) {
@@ -81,28 +98,48 @@ async function actorFor(owner, actorId) {
   if (!snap.exists || snap.data().active !== true || snap.data().ownerAdminId !== owner.id) throw new HttpsError("permission-denied", "Actor not authorised.");
   return { id: snap.id, ...snap.data(), actorType: "subuser" };
 }
-async function sendOtp(mobile, otp) {
-  const key = TWOFACTOR_API_KEY.value();
-  if (!key) throw new HttpsError("failed-precondition", "OTP service is not configured.");
+async function sendEmailOtp(otp) {
+  const sender = String(EMAIL_NODEMAILER.value() || "").trim();
+  const password = EMAIL_PASS.value();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sender) || !password) {
+    throw new HttpsError("failed-precondition", "Email OTP service is not configured.");
+  }
+
   try {
-    const response = await fetch(`https://2factor.in/API/V1/${encodeURIComponent(key)}/SMS/+91${mobile}/${otp}/OTP`, { signal: AbortSignal.timeout(10000) });
-    const body = await response.json();
-    if (!response.ok || body?.Status !== "Success") throw new Error("send failed");
-  } catch { throw new HttpsError("unavailable", "OTP could not be sent right now."); }
+    const transporter = nodemailer.createTransport({
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
+      auth: { user: sender, pass: password },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000,
+    });
+    await transporter.sendMail(buildAdminOtpMessage(sender, otp));
+  } catch (error) {
+    console.error("Admin email OTP delivery failed", { code: error?.code || "unknown" });
+    throw new HttpsError("unavailable", "Email OTP could not be sent right now.");
+  }
 }
-async function createChallenge(mobile, ownerId) {
-  const otp = crypto.randomInt(1000, 10000).toString();
+async function createEmailChallenge(ownerId) {
+  const otp = crypto.randomInt(100000, 1000000).toString();
   const salt = crypto.randomBytes(16).toString("hex");
   const id = crypto.randomBytes(24).toString("hex");
-  await sendOtp(mobile, otp);
-  await db.collection("_panelOtpChallenges").doc(id).set({ panel: "admin", mobile, ownerId, salt, otpHash: hash(`${salt}:${otp}`), attempts: 0, verified: false, used: false, createdAt: FieldValue.serverTimestamp(), expiresAt: Timestamp.fromMillis(Date.now() + OTP_MS) });
+  const ref = db.collection("_panelOtpChallenges").doc(id);
+  await ref.set({ panel: "admin", delivery: "email", ownerId, recipientHash: hash(ADMIN_OTP_RECIPIENT), salt, otpHash: hash(`${salt}:${otp}`), attempts: 0, verified: false, used: false, createdAt: FieldValue.serverTimestamp(), expiresAt: Timestamp.fromMillis(Date.now() + OTP_MS) });
+  try {
+    await sendEmailOtp(otp);
+  } catch (error) {
+    await ref.delete().catch(() => null);
+    throw error;
+  }
   return id;
 }
 async function verifyChallenge(id, otp) {
   const ref = db.collection("_panelOtpChallenges").doc(id), snap = await ref.get();
   if (!snap.exists) throw new HttpsError("unauthenticated", "OTP session expired.");
   const data = snap.data();
-  if (data.panel !== "admin" || data.used || data.expiresAt.toMillis() < Date.now()) { await ref.delete(); throw new HttpsError("unauthenticated", "OTP session expired."); }
+  if (data.panel !== "admin" || data.delivery !== "email" || data.used || data.expiresAt.toMillis() < Date.now()) { await ref.delete(); throw new HttpsError("unauthenticated", "OTP session expired."); }
   if (Number(data.attempts || 0) >= 5) { await ref.delete(); throw new HttpsError("resource-exhausted", "Too many incorrect attempts."); }
   if (hash(`${data.salt}:${otp}`) !== data.otpHash) { await ref.update({ attempts: FieldValue.increment(1) }); throw new HttpsError("unauthenticated", "Incorrect OTP."); }
   const ticket = crypto.randomBytes(32).toString("hex");
@@ -113,7 +150,7 @@ async function readTicket(id, ticket) {
   const ref = db.collection("_panelOtpChallenges").doc(id), snap = await ref.get();
   if (!snap.exists) throw new HttpsError("unauthenticated", "Login session expired.");
   const data = snap.data();
-  if (data.panel !== "admin" || !data.verified || data.used || data.ticketExpiresAt.toMillis() < Date.now() || data.ticketHash !== hash(ticket)) throw new HttpsError("unauthenticated", "Login session expired.");
+  if (data.panel !== "admin" || data.delivery !== "email" || !data.verified || data.used || data.ticketExpiresAt.toMillis() < Date.now() || data.ticketHash !== hash(ticket)) throw new HttpsError("unauthenticated", "Login session expired.");
   return { ref, data };
 }
 async function passwordHash(password, salt) { return (await scrypt(password, salt, 64)).toString("hex"); }
@@ -231,18 +268,26 @@ exports.cleanupTemplateStorageOnWrite = onDocumentWritten(
   },
 );
 
-exports.panelStartTwoFactorOtp = onCall({ region: REGION, cors: true, secrets: [TWOFACTOR_API_KEY] }, async request => {
-  const mobile = mobile10(request.data?.mobile);
-  if (!/^\d{10}$/.test(mobile)) throw new HttpsError("invalid-argument", "Invalid mobile number.");
-  await Promise.all([rateLimit("admin_otp_mobile", mobile, 3, 600000), rateLimit("admin_otp_ip", ipOf(request), 8, 600000)]);
-  const owner = await ownerFor(mobile);
-  return { challengeId: await createChallenge(mobile, owner.id) };
+// The deployed callable IDs stay unchanged so deploying this version safely
+// overwrites the old SMS implementation instead of leaving it active.
+exports.panelStartTwoFactorOtp = onCall({ region: REGION, cors: true, secrets: [EMAIL_PASS] }, async request => {
+  const owner = await ownerForEmailLogin();
+  await rateLimit("admin_email_otp_cooldown", owner.id, 1, 60000);
+  await Promise.all([
+    rateLimit("admin_email_otp_owner", owner.id, 3, 600000),
+    rateLimit("admin_email_otp_ip", ipOf(request), 8, 600000),
+  ]);
+  return {
+    challengeId: await createEmailChallenge(owner.id),
+    delivery: "email",
+    maskedEmail: MASKED_ADMIN_OTP_RECIPIENT,
+  };
 });
 exports.panelVerifyTwoFactorOtp = onCall({ region: REGION, cors: true }, async request => {
   const id = String(request.data?.challengeId || ""), otp = String(request.data?.otp || "");
-  if (!/^[a-f0-9]{48}$/.test(id) || !/^\d{4}$/.test(otp)) throw new HttpsError("invalid-argument", "Enter a valid OTP.");
+  if (!/^[a-f0-9]{48}$/.test(id) || !/^\d{6}$/.test(otp)) throw new HttpsError("invalid-argument", "Enter a valid 6-digit OTP.");
   await rateLimit("admin_verify_ip", ipOf(request), 20, 600000);
-  const verified = await verifyChallenge(id, otp), owner = await ownerFor(verified.mobile);
+  const verified = await verifyChallenge(id, otp), owner = await ownerForId(verified.ownerId);
   return { loginTicket: verified.ticket, actors: await actorsFor(owner) };
 });
 exports.panelCreateSessionFromTwoFactor = onCall({ region: REGION, cors: true }, async request => {
@@ -250,7 +295,7 @@ exports.panelCreateSessionFromTwoFactor = onCall({ region: REGION, cors: true },
   const actorId = String(request.data?.actorId || ""), password = String(request.data?.password || "");
   await rateLimit("admin_password_ip", ipOf(request), 20, 600000);
   const { ref: challengeRef, data: verified } = await readTicket(challengeId, ticket);
-  const owner = await ownerFor(verified.mobile), actor = await actorFor(owner, actorId);
+  const owner = await ownerForId(verified.ownerId), actor = await actorFor(owner, actorId);
   await verifyOrCreatePassword(owner.id, actor.id, password, true);
   await challengeRef.update({ used: true, ticketHash: FieldValue.delete() });
   const tabs = actor.actorType === "owner" ? OWNER_TABS : safeTabs(actor.assigntab);
