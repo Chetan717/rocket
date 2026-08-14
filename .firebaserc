@@ -1,7 +1,5 @@
 {
   "projects": {
-    "y": "mlmbooster-a4887"
-  },
-  "targets": {},
-  "etags": {}
+    "default": "mlmbooster-a4887"
+  }
 }

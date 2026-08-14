@@ -1,6 +1,6 @@
 /* global require, exports, Buffer */
 
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const { onDocumentWritten } = require("firebase-functions/v2/firestore");
 const { initializeApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
@@ -24,6 +24,7 @@ initializeApp();
 const db = getFirestore();
 const scrypt = promisify(crypto.scrypt);
 const EMAIL_PASS = defineSecret("EMAIL_PASS");
+const EXPO_ACCESS_TOKEN = defineSecret("EXPO_ACCESS_TOKEN");
 const EMAIL_NODEMAILER = defineString("EMAIL_NODEMAILER", {
   default: "soilbooster717@gmail.com",
 });
@@ -31,7 +32,10 @@ const REGION = "asia-south1";
 const TEMPLATE_STORAGE_CLEANUP_REGION = "us-central1";
 const SESSION_MS = 10 * 60 * 60 * 1000;
 const OTP_MS = 5 * 60 * 1000;
-const OWNER_TABS = ["dashboard","companies","templates","templates_operation","templates_quality","Graphics","marketing","removebg","userdashboard","leads","adminmanagement","templatedata","taskmanagement","security"];
+const OWNER_TABS = ["dashboard","companies","templates","templates_operation","templates_quality","Graphics","marketing","removebg","userdashboard","leads","adminmanagement","templatedata","taskmanagement","security","notifications"];
+const EXPO_PROJECT_ID = "555505c6-41df-486d-b225-4d9832044425";
+const APP_ORIGIN = "https://app.mlmlive.in";
+const EXPO_SEND_URL = "https://exp.host/--/api/v2/push/send";
 
 const hash = value => crypto.createHash("sha256").update(String(value)).digest("hex");
 const safeTabs = tabs => Array.isArray(tabs) ? [...new Set(tabs.filter(x => OWNER_TABS.includes(x)))].slice(0, 20) : [];
@@ -50,6 +54,32 @@ const deviceOf = request => ({
   timezone: cleanText(request.data?.device?.timezone || "", 60),
   userAgent: cleanText(request.rawRequest?.headers?.["user-agent"] || "", 300),
 });
+const validExpoPushToken = token => /^(Expo|Exponent)PushToken\[[A-Za-z0-9_-]+\]$/.test(token);
+const safeAppUrl = value => {
+  try {
+    const url = new URL(String(value || "/"), `${APP_ORIGIN}/`);
+    return url.protocol === "https:" && url.origin === APP_ORIGIN ? url.toString() : "";
+  } catch { return ""; }
+};
+
+async function requireMasterAdmin(request) {
+  const session = await requireSession(request);
+  if (request.auth?.token?.actorType !== "owner" || request.auth?.token?.role !== "Master Admin") throw new HttpsError("permission-denied", "Only Master Admin can send app notifications.");
+  return session;
+}
+
+async function sendExpoMessages(messages) {
+  const accessToken = EXPO_ACCESS_TOKEN.value();
+  if (!accessToken) throw new HttpsError("failed-precondition", "Expo push service is not configured.");
+  const tickets = [];
+  for (let index = 0; index < messages.length; index += 100) {
+    const response = await fetch(EXPO_SEND_URL, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}` }, body: JSON.stringify(messages.slice(index, index + 100)) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) { console.error( "push request failed", { status: response.status, errors: result.errors || [] }); throw new HttpsError("unavailable", "Notification service is temporarily unavailable."); }
+    tickets.push(...(Array.isArray(result.data) ? result.data : [result.data]).filter(Boolean));
+  }
+  return tickets;
+}
 
 function strongPassword(password) {
   return typeof password === "string" && password.length >= 8 && password.length <= 12 &&
@@ -351,4 +381,36 @@ exports.purgeLegacyPanelSecrets = onCall({ region: REGION, cors: true }, async r
   }
   if (count) await batch.commit();
   return { purged: count };
+});
+
+exports.registerExpoPushToken = onRequest({ region: REGION, cors: true }, async (request, response) => {
+  response.set("Cache-Control", "no-store");
+  if (request.method !== "POST") { response.status(405).json({ ok: false }); return; }
+  const token = cleanText(request.body?.token, 255), platform = cleanText(request.body?.platform, 20), projectId = cleanText(request.body?.projectId, 80);
+  if (!validExpoPushToken(token) || !["android", "ios"].includes(platform) || projectId !== EXPO_PROJECT_ID) { response.status(422).json({ ok: false, error: "Invalid registration" }); return; }
+  try {
+    await rateLimit("push_register_ip", ipOf({ rawRequest: request }), 80, 10 * 60 * 1000);
+    const ref = db.collection("_expoPushDevices").doc(hash(`expo:${token}`)), existing = await ref.get();
+    await ref.set({ token, platform, projectId, active: true, lastSeenAt: FieldValue.serverTimestamp(), ...(existing.exists ? {} : { createdAt: FieldValue.serverTimestamp() }) }, { merge: true });
+    response.status(200).json({ ok: true });
+  } catch (error) { const limited = error?.code === "resource-exhausted"; response.status(limited ? 429 : 500).json({ ok: false, error: limited ? "Try later" : "Server error" }); }
+});
+
+exports.panelPushOverview = onCall({ region: REGION, cors: true }, async request => {
+  await requireMasterAdmin(request);
+  const [devices, campaigns] = await Promise.all([db.collection("_expoPushDevices").where("active", "==", true).count().get(), db.collection("_pushCampaigns").orderBy("createdAt", "desc").limit(20).get()]);
+  return { deviceCount: devices.data().count, campaigns: campaigns.docs.map(doc => ({ id: doc.id, ...doc.data(), createdAt: doc.data().createdAt?.toMillis?.() || null })) };
+});
+
+exports.panelSendPushNotification = onCall({ region: REGION, cors: true, secrets: [EXPO_ACCESS_TOKEN] }, async request => {
+  const { data: session } = await requireMasterAdmin(request);
+  await rateLimit("admin_push_send", request.auth.uid, 20, 60 * 60 * 1000);
+  const title = cleanText(request.data?.title, 100), body = cleanText(request.data?.body, 1000), url = safeAppUrl(request.data?.url);
+  if (!title || !body || !url) throw new HttpsError("invalid-argument", "Enter a valid title, message and MLM LIVE page URL.");
+  const snapshot = await db.collection("_expoPushDevices").where("active", "==", true).limit(10000).get();
+  if (snapshot.empty) throw new HttpsError("failed-precondition", "No app devices are registered yet.");
+  const messages = snapshot.docs.filter(doc => validExpoPushToken(doc.data().token)).map(doc => ({ to: doc.data().token, title, body, data: { url }, priority: "high", sound: "default", channelId: "default" }));
+  const tickets = await sendExpoMessages(messages), accepted = tickets.filter(ticket => ticket.status === "ok").length, rejected = tickets.length - accepted;
+  await db.collection("_pushCampaigns").add({ title, body, url, targeted: messages.length, accepted, rejected, createdAt: FieldValue.serverTimestamp(), createdByUid: request.auth.uid, createdByName: request.auth.token.name || session.actorName || "Master Admin" });
+  return { targeted: messages.length, accepted, rejected };
 });
