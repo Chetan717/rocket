@@ -19,6 +19,14 @@ const {
   getRemovedTemplateStoragePaths,
   getUnreferencedTemplateStoragePaths,
 } = require("./templateStorageCleanup");
+const {
+  normalizeEmail,
+  normalizeCode,
+  validateMarketingMemberInput,
+  validateCouponInput,
+  assertWithinParentPercentage,
+  buildHierarchy,
+} = require("./marketingHierarchy");
 
 initializeApp();
 const db = getFirestore();
@@ -62,9 +70,19 @@ const safeAppUrl = value => {
   } catch { return ""; }
 };
 
-async function requireMasterAdmin(request) {
+async function requireMasterAdmin(request, message = "Only Master Admin can perform this action.") {
   const session = await requireSession(request);
-  if (request.auth?.token?.actorType !== "owner" || request.auth?.token?.role !== "Master Admin") throw new HttpsError("permission-denied", "Only Master Admin can send app notifications.");
+  if (request.auth?.token?.actorType !== "owner" || request.auth?.token?.role !== "Master Admin") throw new HttpsError("permission-denied", message);
+  return session;
+}
+
+async function requireMarketingAdmin(request) {
+  const session = await requireSession(request);
+  const isMaster = request.auth?.token?.actorType === "owner" && request.auth?.token?.role === "Master Admin";
+  const hasMarketingTab = Array.isArray(request.auth?.token?.tabs) && request.auth.token.tabs.includes("marketing");
+  if (!isMaster && !hasMarketingTab) {
+    throw new HttpsError("permission-denied", "Marketing management access is required.");
+  }
   return session;
 }
 
@@ -206,6 +224,130 @@ async function requireSession(request) {
   const ref = db.collection("_panelSessions").doc(request.auth.uid), snap = await ref.get();
   if (!snap.exists || snap.data().panel !== "admin" || snap.data().revoked === true || snap.data().expiresAt.toMillis() <= Date.now()) throw new HttpsError("unauthenticated", "Session expired.");
   return { ref, data: snap.data() };
+}
+
+const millisOf = value => value?.toMillis?.() || null;
+const numericPercentage = value => {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : 0;
+};
+
+function validationError(error) {
+  if (error instanceof TypeError || error instanceof RangeError) {
+    return new HttpsError("invalid-argument", error.message);
+  }
+  return error;
+}
+
+async function writeInBatches(operations) {
+  for (let index = 0; index < operations.length; index += 400) {
+    const batch = db.batch();
+    for (const operation of operations.slice(index, index + 400)) operation(batch);
+    await batch.commit();
+  }
+}
+
+async function revokeMarketingSessions(ownerId, reason) {
+  const snapshot = await db.collection("_panelSessions").where("ownerId", "==", ownerId).get();
+  const operations = snapshot.docs.map(document => batch => batch.update(document.ref, {
+    revoked: true,
+    revokedAt: FieldValue.serverTimestamp(),
+    revokeReason: cleanText(reason, 120),
+    expiresAt: Timestamp.fromMillis(0),
+  }));
+  if (operations.length) await writeInBatches(operations);
+  await Promise.all(snapshot.docs.map(document => getAuth().revokeRefreshTokens(document.id).catch(() => null)));
+}
+
+async function hierarchyDocuments() {
+  const [membersSnapshot, couponsSnapshot] = await Promise.all([
+    db.collection("mteam").get(),
+    db.collection("couponcode").get(),
+  ]);
+  const coupons = couponsSnapshot.docs.map(document => ({ id: document.id, ...document.data() }));
+  const couponById = new Map(coupons.map(coupon => [coupon.id, coupon]));
+  const members = membersSnapshot.docs.map(document => {
+    const data = document.data();
+    const coupon = couponById.get(String(data.assign_coupon_id || ""));
+    const fallbackPercentage = coupon?.marketing_member_percentage;
+    return {
+      id: document.id,
+      ...data,
+      referCode: data.referCode || coupon?.referCode || "",
+      commissionPercentage: data.commissionPercentage === undefined
+        ? numericPercentage(fallbackPercentage)
+        : numericPercentage(data.commissionPercentage),
+    };
+  });
+  return { members, coupons, couponById };
+}
+
+async function rebuildMarketingHierarchy() {
+  const snapshot = await db.collection("mteam").get();
+  const members = snapshot.docs.map(document => ({ id: document.id, ...document.data() }));
+  let hierarchy;
+  try {
+    hierarchy = buildHierarchy(members);
+  } catch (error) {
+    console.error("Marketing hierarchy rebuild rejected", { message: error.message });
+    throw new HttpsError("failed-precondition", "Marketing hierarchy contains an invalid cycle.");
+  }
+  const byId = new Map(members.map(member => [member.id, member]));
+  const operations = snapshot.docs.map(document => batch => {
+    const info = hierarchy.get(document.id) || { level: 0, ancestorIds: [] };
+    const parent = byId.get(String(document.data().parentMteamId || ""));
+    batch.set(document.ref, {
+      level: info.level,
+      ancestorIds: info.ancestorIds,
+      parentName: parent?.name || "",
+      hierarchyUpdatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+  });
+  if (operations.length) await writeInBatches(operations);
+}
+
+async function parentChain(parentId, childId) {
+  const ancestorIds = [];
+  const visited = new Set();
+  let currentId = String(parentId || "");
+  let parentDocument = null;
+  while (currentId) {
+    if (currentId === childId || visited.has(currentId)) {
+      throw new HttpsError("invalid-argument", "A member cannot be assigned below itself or its descendants.");
+    }
+    if (ancestorIds.length >= 25) throw new HttpsError("failed-precondition", "Marketing hierarchy is too deep.");
+    visited.add(currentId);
+    const snapshot = await db.collection("mteam").doc(currentId).get();
+    if (!snapshot.exists) throw new HttpsError("not-found", "Selected parent Marketing member was not found.");
+    if (!parentDocument) parentDocument = snapshot;
+    ancestorIds.unshift(snapshot.id);
+    currentId = String(snapshot.data().parentMteamId || "");
+  }
+  return { ancestorIds, parentDocument };
+}
+
+async function effectiveMemberPercentage(memberDocument) {
+  if (!memberDocument?.exists) return null;
+  const data = memberDocument.data();
+  if (data.commissionPercentage !== undefined) return numericPercentage(data.commissionPercentage);
+  if (!data.assign_coupon_id) return 0;
+  const coupon = await db.collection("couponcode").doc(String(data.assign_coupon_id)).get();
+  return coupon.exists ? numericPercentage(coupon.data().marketing_member_percentage) : 0;
+}
+
+async function ensureUniqueMarketingEmail(loginEmail, memberId) {
+  const snapshot = await db.collection("mteam").where("loginEmail", "==", loginEmail).limit(2).get();
+  if (snapshot.docs.some(document => document.id !== memberId)) {
+    throw new HttpsError("already-exists", "This login email is already assigned to another Marketing member.");
+  }
+}
+
+async function ensureUniqueCouponField(field, value, couponId, label) {
+  if (!value) return;
+  const snapshot = await db.collection("couponcode").where(field, "==", value).limit(2).get();
+  if (snapshot.docs.some(document => document.id !== couponId)) {
+    throw new HttpsError("already-exists", `${label} is already in use.`);
+  }
 }
 
 async function deleteTemplateStoragePaths(bucket, paths) {
@@ -383,6 +525,290 @@ exports.purgeLegacyPanelSecrets = onCall({ region: REGION, cors: true }, async r
   return { purged: count };
 });
 
+exports.panelListMarketingHierarchy = onCall({ region: REGION, cors: true }, async request => {
+  await requireMarketingAdmin(request);
+  const { members, coupons } = await hierarchyDocuments();
+  const byId = new Map(members.map(member => [member.id, member]));
+  return {
+    members: members.map(member => ({
+      id: member.id,
+      name: cleanText(member.name, 80),
+      mobile: String(member.mobile || ""),
+      loginEmail: normalizeEmail(member.loginEmail),
+      active: member.active === true,
+      assign_coupon_id: String(member.assign_coupon_id || ""),
+      referCode: String(member.referCode || ""),
+      parentMteamId: String(member.parentMteamId || ""),
+      parentName: cleanText(byId.get(String(member.parentMteamId || ""))?.name, 80),
+      level: Number(member.level || 0),
+      ancestorIds: Array.isArray(member.ancestorIds) ? member.ancestorIds.map(String).slice(0, 25) : [],
+      commissionPercentage: numericPercentage(member.commissionPercentage),
+      uplineBonusPercentage: numericPercentage(member.uplineBonusPercentage === undefined ? 10 : member.uplineBonusPercentage),
+      createdAt: millisOf(member.createdAt),
+      updatedAt: millisOf(member.updatedAt),
+    })),
+    coupons: coupons.map(coupon => ({
+      id: coupon.id,
+      code: String(coupon.code || ""),
+      referCode: String(coupon.referCode || ""),
+      assigned_user: coupon.assigned_user ? {
+        id: String(coupon.assigned_user.id || ""),
+        name: cleanText(coupon.assigned_user.name, 80),
+        mobile: String(coupon.assigned_user.mobile || ""),
+      } : null,
+      user_discount: numericPercentage(coupon.user_discount),
+      marketing_member_percentage: numericPercentage(coupon.marketing_member_percentage),
+      active: coupon.active === true,
+      created_at: millisOf(coupon.created_at),
+      updated_at: millisOf(coupon.updated_at),
+    })),
+  };
+});
+
+exports.panelUpsertMarketingMember = onCall({ region: REGION, cors: true }, async request => {
+  await requireMarketingAdmin(request);
+  const requestedId = String(request.data?.memberId || "").trim();
+  if (requestedId && !/^[A-Za-z0-9_-]{1,128}$/.test(requestedId)) {
+    throw new HttpsError("invalid-argument", "Invalid Marketing member ID.");
+  }
+  let input;
+  try { input = validateMarketingMemberInput(request.data || {}); } catch (error) { throw validationError(error); }
+
+  const memberRef = requestedId ? db.collection("mteam").doc(requestedId) : db.collection("mteam").doc();
+  const existing = await memberRef.get();
+  if (requestedId && !existing.exists) throw new HttpsError("not-found", "Marketing member was not found.");
+  await ensureUniqueMarketingEmail(input.loginEmail, memberRef.id);
+
+  let lineage = { ancestorIds: [], parentDocument: null };
+  if (input.parentMteamId) lineage = await parentChain(input.parentMteamId, memberRef.id);
+  const parentPercentage = await effectiveMemberPercentage(lineage.parentDocument);
+  try { assertWithinParentPercentage(input.commissionPercentage, parentPercentage); } catch (error) { throw validationError(error); }
+
+  const children = await db.collection("mteam").where("parentMteamId", "==", memberRef.id).get();
+  const childPercentages = await Promise.all(children.docs.map(effectiveMemberPercentage));
+  if (childPercentages.some(percentage => percentage > input.commissionPercentage)) {
+    throw new HttpsError("failed-precondition", "This percentage is lower than an existing direct team member. Update the child first.");
+  }
+
+  const oldData = existing.exists ? existing.data() : {};
+  const oldEmail = normalizeEmail(oldData.loginEmail);
+  const newEmailIndexRef = db.collection("_marketingEmailOwners").doc(hash(input.loginEmail));
+  const oldEmailIndexRef = oldEmail ? db.collection("_marketingEmailOwners").doc(hash(oldEmail)) : null;
+  const assignedCouponRef = oldData.assign_coupon_id
+    ? db.collection("couponcode").doc(String(oldData.assign_coupon_id))
+    : null;
+
+  await db.runTransaction(async transaction => {
+    const [emailOwner, currentMember, parentSnapshot, assignedCoupon] = await Promise.all([
+      transaction.get(newEmailIndexRef),
+      transaction.get(memberRef),
+      input.parentMteamId ? transaction.get(db.collection("mteam").doc(input.parentMteamId)) : Promise.resolve(null),
+      assignedCouponRef ? transaction.get(assignedCouponRef) : Promise.resolve(null),
+    ]);
+    if (requestedId && !currentMember.exists) throw new HttpsError("not-found", "Marketing member was not found.");
+    if (emailOwner.exists && emailOwner.data().mteamId !== memberRef.id) {
+      throw new HttpsError("already-exists", "This login email is already assigned to another Marketing member.");
+    }
+    if (parentSnapshot && !parentSnapshot.exists) throw new HttpsError("not-found", "Selected parent Marketing member was not found.");
+
+    const now = FieldValue.serverTimestamp();
+    transaction.set(memberRef, {
+      ...input,
+      parentName: lineage.parentDocument?.data()?.name || "",
+      level: lineage.ancestorIds.length,
+      ancestorIds: lineage.ancestorIds,
+      password: FieldValue.delete(),
+      updatedAt: now,
+      updatedByUid: request.auth.uid,
+      ...(currentMember.exists ? {} : { createdAt: now, createdByUid: request.auth.uid }),
+    }, { merge: true });
+    transaction.set(newEmailIndexRef, {
+      panel: "marketing",
+      loginEmail: input.loginEmail,
+      mteamId: memberRef.id,
+      updatedAt: now,
+    });
+    if (oldEmailIndexRef && oldEmail !== input.loginEmail) transaction.delete(oldEmailIndexRef);
+    if (assignedCoupon?.exists) {
+      transaction.update(assignedCoupon.ref, {
+        referCode: input.referCode,
+        marketing_member_percentage: input.commissionPercentage,
+        assigned_user: { id: memberRef.id, name: input.name, mobile: input.mobile },
+        updated_at: now,
+      });
+    }
+  });
+
+  await rebuildMarketingHierarchy();
+  const sensitiveChanged = existing.exists && (
+    oldEmail !== input.loginEmail ||
+    oldData.active !== input.active ||
+    String(oldData.parentMteamId || "") !== input.parentMteamId
+  );
+  if (sensitiveChanged) await revokeMarketingSessions(memberRef.id, "Marketing account settings changed by Admin");
+  await db.collection("_panelAudit").add({
+    panel: "admin",
+    action: existing.exists ? "marketing_member_updated" : "marketing_member_created",
+    targetId: memberRef.id,
+    actorUid: request.auth.uid,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  return { ok: true, memberId: memberRef.id };
+});
+
+exports.panelDeleteMarketingMember = onCall({ region: REGION, cors: true }, async request => {
+  await requireMasterAdmin(request, "Only Master Admin can delete a Marketing member.");
+  const memberId = String(request.data?.memberId || "").trim();
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(memberId)) throw new HttpsError("invalid-argument", "Invalid Marketing member ID.");
+  const memberRef = db.collection("mteam").doc(memberId);
+  const member = await memberRef.get();
+  if (!member.exists) throw new HttpsError("not-found", "Marketing member was not found.");
+  const children = await db.collection("mteam").where("parentMteamId", "==", memberId).limit(1).get();
+  if (!children.empty) throw new HttpsError("failed-precondition", "Move or remove this member's direct team before deleting the member.");
+
+  let coupon = null;
+  if (member.data().assign_coupon_id) coupon = await db.collection("couponcode").doc(String(member.data().assign_coupon_id)).get();
+  if (coupon?.exists && coupon.data().code) {
+    const sales = await db.collection("subscription")
+      .where("couponApplied", "==", coupon.data().code)
+      .where("payment", "==", "Success")
+      .limit(1).get();
+    if (!sales.empty) throw new HttpsError("failed-precondition", "This member has sales history. Deactivate the member instead so reports stay accurate.");
+  }
+
+  await revokeMarketingSessions(memberId, "Marketing account deleted by Master Admin");
+  const team = Array.isArray(member.data().team) ? member.data().team : [];
+  const credentialRefs = [memberId, ...team.map(user => user?.id).filter(Boolean)]
+    .map(actorId => db.collection("_panelCredentials").doc(hash(`marketing:${memberId}:${actorId}`)));
+  const email = normalizeEmail(member.data().loginEmail);
+  const operations = [
+    batch => batch.delete(memberRef),
+    ...credentialRefs.map(ref => batch => batch.delete(ref)),
+    ...(email ? [batch => batch.delete(db.collection("_marketingEmailOwners").doc(hash(email)))] : []),
+    ...(coupon?.exists ? [batch => batch.update(coupon.ref, { assigned_user: null, updated_at: FieldValue.serverTimestamp() })] : []),
+  ];
+  await writeInBatches(operations);
+  await db.collection("_panelAudit").add({ panel: "admin", action: "marketing_member_deleted", targetId: memberId, actorUid: request.auth.uid, createdAt: FieldValue.serverTimestamp() });
+  return { ok: true };
+});
+
+exports.panelUpsertMarketingCoupon = onCall({ region: REGION, cors: true }, async request => {
+  await requireMarketingAdmin(request);
+  const requestedId = String(request.data?.couponId || "").trim();
+  if (requestedId && !/^[A-Za-z0-9_-]{1,128}$/.test(requestedId)) throw new HttpsError("invalid-argument", "Invalid coupon ID.");
+  let input;
+  try { input = validateCouponInput(request.data || {}); } catch (error) { throw validationError(error); }
+  const couponRef = requestedId ? db.collection("couponcode").doc(requestedId) : db.collection("couponcode").doc();
+  const [existing, member] = await Promise.all([
+    couponRef.get(),
+    db.collection("mteam").doc(input.assignedMteamId).get(),
+  ]);
+  if (requestedId && !existing.exists) throw new HttpsError("not-found", "Coupon was not found.");
+  if (!member.exists) throw new HttpsError("not-found", "Assigned Marketing member was not found.");
+  if (member.data().assign_coupon_id && member.data().assign_coupon_id !== couponRef.id) {
+    throw new HttpsError("failed-precondition", "This member already has another coupon assigned.");
+  }
+  await Promise.all([
+    ensureUniqueCouponField("code", input.code, couponRef.id, "Coupon code"),
+    ensureUniqueCouponField("referCode", input.referCode, couponRef.id, "Refer code"),
+  ]);
+
+  let parent = null;
+  if (member.data().parentMteamId) parent = await db.collection("mteam").doc(String(member.data().parentMteamId)).get();
+  const parentPercentage = await effectiveMemberPercentage(parent);
+  try { assertWithinParentPercentage(input.marketingPercentage, parentPercentage); } catch (error) { throw validationError(error); }
+  const children = await db.collection("mteam").where("parentMteamId", "==", member.id).get();
+  const childPercentages = await Promise.all(children.docs.map(effectiveMemberPercentage));
+  if (childPercentages.some(percentage => percentage > input.marketingPercentage)) {
+    throw new HttpsError("failed-precondition", "This percentage is lower than an existing direct team member. Update the child first.");
+  }
+
+  const oldMemberId = existing.exists ? String(existing.data().assigned_user?.id || "") : "";
+  const oldMemberRef = oldMemberId && oldMemberId !== member.id ? db.collection("mteam").doc(oldMemberId) : null;
+  const codeIndexRef = db.collection("_marketingCouponCodes").doc(hash(input.code));
+  const referIndexRef = input.referCode ? db.collection("_marketingReferCodes").doc(hash(input.referCode)) : null;
+  const oldCode = existing.exists ? normalizeCode(existing.data().code) : "";
+  const oldReferCode = existing.exists ? normalizeCode(existing.data().referCode) : "";
+  await db.runTransaction(async transaction => {
+    const [currentCoupon, currentMember, oldMember, codeOwner, referOwner] = await Promise.all([
+      transaction.get(couponRef),
+      transaction.get(member.ref),
+      oldMemberRef ? transaction.get(oldMemberRef) : Promise.resolve(null),
+      transaction.get(codeIndexRef),
+      referIndexRef ? transaction.get(referIndexRef) : Promise.resolve(null),
+    ]);
+    if (requestedId && !currentCoupon.exists) throw new HttpsError("not-found", "Coupon was not found.");
+    if (!currentMember.exists) throw new HttpsError("not-found", "Assigned Marketing member was not found.");
+    if (currentMember.data().assign_coupon_id && currentMember.data().assign_coupon_id !== couponRef.id) {
+      throw new HttpsError("failed-precondition", "This member already has another coupon assigned.");
+    }
+    if (codeOwner.exists && codeOwner.data().couponId !== couponRef.id) throw new HttpsError("already-exists", "Coupon code is already in use.");
+    if (referOwner?.exists && referOwner.data().couponId !== couponRef.id) throw new HttpsError("already-exists", "Refer code is already in use.");
+    const now = FieldValue.serverTimestamp();
+    if (oldMember?.exists && oldMember.data().assign_coupon_id === couponRef.id) {
+      transaction.update(oldMember.ref, { assign_coupon_id: "", referCode: "", updatedAt: now });
+    }
+    transaction.set(couponRef, {
+      code: input.code,
+      referCode: input.referCode,
+      assigned_user: { id: member.id, name: cleanText(member.data().name, 80), mobile: String(member.data().mobile || "") },
+      user_discount: input.userDiscount,
+      marketing_member_percentage: input.marketingPercentage,
+      active: input.active,
+      updated_at: now,
+      updatedByUid: request.auth.uid,
+      ...(currentCoupon.exists ? {} : { created_at: now, createdByUid: request.auth.uid }),
+    }, { merge: true });
+    transaction.update(member.ref, {
+      assign_coupon_id: couponRef.id,
+      referCode: input.referCode,
+      commissionPercentage: input.marketingPercentage,
+      password: FieldValue.delete(),
+      updatedAt: now,
+    });
+    transaction.set(codeIndexRef, { code: input.code, couponId: couponRef.id, updatedAt: now });
+    if (referIndexRef) transaction.set(referIndexRef, { referCode: input.referCode, couponId: couponRef.id, updatedAt: now });
+    if (oldCode && oldCode !== input.code) transaction.delete(db.collection("_marketingCouponCodes").doc(hash(oldCode)));
+    if (oldReferCode && oldReferCode !== input.referCode) transaction.delete(db.collection("_marketingReferCodes").doc(hash(oldReferCode)));
+  });
+  await db.collection("_panelAudit").add({ panel: "admin", action: existing.exists ? "marketing_coupon_updated" : "marketing_coupon_created", targetId: couponRef.id, actorUid: request.auth.uid, createdAt: FieldValue.serverTimestamp() });
+  return { ok: true, couponId: couponRef.id };
+});
+
+exports.panelDeleteMarketingCoupon = onCall({ region: REGION, cors: true }, async request => {
+  await requireMasterAdmin(request, "Only Master Admin can delete a Marketing coupon.");
+  const couponId = String(request.data?.couponId || "").trim();
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(couponId)) throw new HttpsError("invalid-argument", "Invalid coupon ID.");
+  const couponRef = db.collection("couponcode").doc(couponId);
+  const coupon = await couponRef.get();
+  if (!coupon.exists) throw new HttpsError("not-found", "Coupon was not found.");
+  if (coupon.data().code) {
+    const sales = await db.collection("subscription")
+      .where("couponApplied", "==", coupon.data().code)
+      .where("payment", "==", "Success")
+      .limit(1).get();
+    if (!sales.empty) throw new HttpsError("failed-precondition", "This coupon has sales history. Deactivate it instead so reports stay accurate.");
+  }
+  await db.runTransaction(async transaction => {
+    const current = await transaction.get(couponRef);
+    if (!current.exists) throw new HttpsError("not-found", "Coupon was not found.");
+    const currentMemberId = String(current.data().assigned_user?.id || "");
+    if (currentMemberId) {
+      const memberRef = db.collection("mteam").doc(currentMemberId);
+      const member = await transaction.get(memberRef);
+      if (member.exists && member.data().assign_coupon_id === couponId) {
+        transaction.update(memberRef, { assign_coupon_id: "", referCode: "", updatedAt: FieldValue.serverTimestamp() });
+      }
+    }
+    const code = normalizeCode(current.data().code), referCode = normalizeCode(current.data().referCode);
+    if (code) transaction.delete(db.collection("_marketingCouponCodes").doc(hash(code)));
+    if (referCode) transaction.delete(db.collection("_marketingReferCodes").doc(hash(referCode)));
+    transaction.delete(couponRef);
+  });
+  await db.collection("_panelAudit").add({ panel: "admin", action: "marketing_coupon_deleted", targetId: couponId, actorUid: request.auth.uid, createdAt: FieldValue.serverTimestamp() });
+  return { ok: true };
+});
+
 exports.registerExpoPushToken = onRequest({ region: REGION, cors: true }, async (request, response) => {
   response.set("Cache-Control", "no-store");
   if (request.method !== "POST") { response.status(405).json({ ok: false }); return; }
@@ -400,6 +826,28 @@ exports.panelPushOverview = onCall({ region: REGION, cors: true }, async request
   await requireMasterAdmin(request);
   const [devices, campaigns] = await Promise.all([db.collection("_expoPushDevices").where("active", "==", true).count().get(), db.collection("_pushCampaigns").orderBy("createdAt", "desc").limit(20).get()]);
   return { deviceCount: devices.data().count, campaigns: campaigns.docs.map(doc => ({ id: doc.id, ...doc.data(), createdAt: doc.data().createdAt?.toMillis?.() || null })) };
+});
+
+exports.panelDeletePushCampaigns = onCall({ region: REGION, cors: true }, async request => {
+  await requireMasterAdmin(request, "Only Master Admin can delete notification history.");
+  const clearAll = request.data?.clearAll === true;
+  const ids = [...new Set((Array.isArray(request.data?.campaignIds) ? request.data.campaignIds : [])
+    .map(value => String(value || "").trim())
+    .filter(value => /^[A-Za-z0-9_-]{1,128}$/.test(value)))]
+    .slice(0, 100);
+  if (!clearAll && ids.length === 0) throw new HttpsError("invalid-argument", "Select at least one notification.");
+  const documents = clearAll
+    ? (await db.collection("_pushCampaigns").get()).docs
+    : (await Promise.all(ids.map(id => db.collection("_pushCampaigns").doc(id).get()))).filter(document => document.exists);
+  if (documents.length) await writeInBatches(documents.map(document => batch => batch.delete(document.ref)));
+  await db.collection("_panelAudit").add({
+    panel: "admin",
+    action: clearAll ? "push_history_cleared" : "push_history_deleted",
+    deletedCount: documents.length,
+    actorUid: request.auth.uid,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  return { ok: true, deletedCount: documents.length };
 });
 
 exports.panelSendPushNotification = onCall({ region: REGION, cors: true, secrets: [EXPO_ACCESS_TOKEN] }, async request => {

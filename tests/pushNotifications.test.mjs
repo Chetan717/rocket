@@ -9,6 +9,7 @@ const sidebarSource = await readFile(new URL("../src/components/Sidebar.jsx", im
 test("push registration and Master Admin send functions are exported", () => {
   assert.match(functionsSource, /exports\.registerExpoPushToken\s*=\s*onRequest/);
   assert.match(functionsSource, /exports\.panelSendPushNotification\s*=\s*onCall/);
+  assert.match(functionsSource, /exports\.panelDeletePushCampaigns\s*=\s*onCall/);
   assert.match(functionsSource, /requireMasterAdmin\(request\)/);
   assert.match(functionsSource, /messages\.slice\(index, index \+ 100\)/);
 });

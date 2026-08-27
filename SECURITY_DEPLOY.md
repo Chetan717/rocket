@@ -11,6 +11,8 @@
 
 ## Secret setup
 
+The Gmail App Password shared in chat must be treated as exposed. Revoke it in Google Account security, create a replacement App Password, and use only the replacement below.
+
 Never place the Gmail App Password in source code, a frontend variable, `.env` committed to the project, or this ZIP. Store it as a Firebase Secret:
 
 ```bash

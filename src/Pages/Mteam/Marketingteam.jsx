@@ -1,566 +1,198 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
-
-import {
-  collection, getDocs, addDoc, updateDoc, deleteDoc,
-  doc, serverTimestamp, query, orderBy,
-} from "firebase/firestore";
-import { db } from "../../../Firebase";
-import { COLLECTIONS } from "../../collections";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { httpsCallable } from "firebase/functions";
+import { functions } from "../../../Firebase";
 import { useAdminDeleteGuard } from "../../Utils/AdminDeleteGuard";
 
-import {
-  Button, Input, Switch, Chip,
-  Tooltip, Spinner, Card, Table, Select,
-} from "@heroui/react";
-
-const COLLECTION   = COLLECTIONS.MTEAM;
-const PAGE_OPTIONS = [5, 10, 20, 50];
-
-const DEFAULT_FORM = {
-  name: "", mobile: "", password: "",
-  assign_coupon_id: "0", active: true,
+const EMPTY_FORM = {
+  name: "",
+  loginEmail: "",
+  mobile: "",
+  parentMteamId: "",
+  commissionPercentage: "10",
+  uplineBonusPercentage: "10",
+  referCode: "",
+  active: true,
 };
 
-// ── Validation ─────────────────────────────────────────────
-const validate = (form) => {
-  const e = {};
-  if (!form.name.trim())               e.name             = "Required";
-  if (!/^\d{10}$/.test(form.mobile))   e.mobile           = "10 digits";
-  if (form.password.length < 6)        e.password         = "Min 6 chars";
-  if (!form.assign_coupon_id.trim())   e.assign_coupon_id = "Required";
-  return e;
-};
+const messageOf = error => String(error?.message || "Request could not be completed.")
+  .replace(/^Firebase(?:Error)?:?\s*/i, "")
+  .replace(/functions\/[a-z-]+\)?\.?/gi, "")
+  .trim();
 
-// ── Icons ──────────────────────────────────────────────────
-const IconAdd = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-    strokeWidth={2} stroke="currentColor" className="w-4 h-4">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-  </svg>
-);
-const IconEdit = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-    strokeWidth={2} stroke="currentColor" className="w-4 h-4">
-    <path strokeLinecap="round" strokeLinejoin="round"
-      d="M16.862 3.487a2.25 2.25 0 113.182 3.182L7.5 19.213l-4.5 1.318 1.318-4.5L16.862 3.487z" />
-  </svg>
-);
-const IconDelete = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-    strokeWidth={2} stroke="currentColor" className="w-4 h-4">
-    <path strokeLinecap="round" strokeLinejoin="round"
-      d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107
-         1.022.166m-1.022-.166L18.16 19.673A2.25 2.25 0 0115.916 21H8.084
-         a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0
-         00-3.478-.397m-12.56 0c.342.052.682.107 1.022.166m0 0a48.11 48.11
-         0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964
-         51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916" />
-  </svg>
-);
-const IconCheck = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-    strokeWidth={2.5} stroke="currentColor" className="w-4 h-4">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-  </svg>
-);
-const IconX = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-    strokeWidth={2.5} stroke="currentColor" className="w-4 h-4">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-  </svg>
-);
-const IconUsers = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-    strokeWidth={1.8} stroke="currentColor" className="w-6 h-6">
-    <path strokeLinecap="round" strokeLinejoin="round"
-      d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94
-         3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112
-         21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12
-         0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995
-         5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0
-         003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0
-         11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0
-         014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
-  </svg>
-);
-const IconSearch = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-    strokeWidth={2} stroke="currentColor" className="w-4 h-4">
-    <path strokeLinecap="round" strokeLinejoin="round"
-      d="M21 21l-4.35-4.35M17 11A6 6 0 105 11a6 6 0 0012 0z" />
-  </svg>
-);
-const IconChevronLeft = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-    strokeWidth={2.5} stroke="currentColor" className="w-4 h-4">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
-  </svg>
-);
-const IconChevronRight = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-    strokeWidth={2.5} stroke="currentColor" className="w-4 h-4">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
-  </svg>
-);
+function validate(form, parent) {
+  const errors = {};
+  if (!form.name.trim()) errors.name = "Name is required";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.loginEmail.trim())) errors.loginEmail = "Valid email is required";
+  if (!/^\d{10}$/.test(form.mobile)) errors.mobile = "Enter 10 digits";
+  if (form.referCode && !/^[A-Za-z0-9]{6}$/.test(form.referCode)) errors.referCode = "Exactly 6 letters/numbers";
+  const percentage = Number(form.commissionPercentage);
+  if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100) errors.commissionPercentage = "Enter 0–100";
+  if (parent && percentage > Number(parent.commissionPercentage || 0)) errors.commissionPercentage = `Maximum ${parent.commissionPercentage}% (parent limit)`;
+  const bonus = Number(form.uplineBonusPercentage);
+  if (!Number.isFinite(bonus) || bonus < 0 || bonus > 100) errors.uplineBonusPercentage = "Enter 0–100";
+  return errors;
+}
 
-// ── Shared inline-error cell ────────────────────────────────
-function InlineCell({ error, children }) {
+function Field({ label, error, hint, children }) {
   return (
-    <Table.Cell>
-      <div className="flex flex-col gap-0.5">
-        {children}
-        {error && <p className="text-[10px] text-danger leading-tight px-0.5">{error}</p>}
-      </div>
-    </Table.Cell>
+    <label className="grid gap-1 text-sm font-semibold text-gray-700 dark:text-gray-200">
+      <span>{label}</span>
+      {children}
+      {hint && !error && <span className="text-xs font-normal text-gray-400">{hint}</span>}
+      {error && <span className="text-xs font-normal text-red-500">{error}</span>}
+    </label>
   );
 }
 
-// ── Inline input row (shared by Add & Edit) ─────────────────
-function InputRow({ initial, accentClass, onSave, onCancel }) {
-  const [form, setForm] = useState(initial);
+const inputClass = "w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-indigo-500 dark:border-gray-700 dark:bg-gray-950";
+
+function MemberForm({ member, members, onSaved, onCancel }) {
+  const [form, setForm] = useState(() => member ? {
+    name: member.name || "",
+    loginEmail: member.loginEmail || "",
+    mobile: member.mobile || "",
+    parentMteamId: member.parentMteamId || "",
+    commissionPercentage: String(member.commissionPercentage ?? 0),
+    uplineBonusPercentage: String(member.uplineBonusPercentage ?? 10),
+    referCode: member.referCode || "",
+    active: member.active === true,
+  } : EMPTY_FORM);
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
-
-  const set = useCallback((field, value) => {
-    setForm((p) => ({ ...p, [field]: value }));
-    setErrors((p) => { const c = { ...p }; delete c[field]; return c; });
-  }, []);
-
-  const handleSave = useCallback(async () => {
-    const errs = validate(form);
-    if (Object.keys(errs).length) { setErrors(errs); return; }
+  const parent = members.find(item => item.id === form.parentMteamId);
+  const parentOptions = members.filter(item => item.id !== member?.id && !(item.ancestorIds || []).includes(member?.id));
+  const set = (field, value) => {
+    setForm(previous => ({ ...previous, [field]: value }));
+    setErrors(previous => ({ ...previous, [field]: undefined }));
+  };
+  const save = async event => {
+    event.preventDefault();
+    const nextErrors = validate(form, parent);
+    if (Object.keys(nextErrors).length) { setErrors(nextErrors); return; }
     setSaving(true);
-    await onSave(form);
-    setSaving(false);
-  }, [form, onSave]);
+    try {
+      await httpsCallable(functions, "panelUpsertMarketingMember")({
+        memberId: member?.id || "",
+        ...form,
+        loginEmail: form.loginEmail.trim().toLowerCase(),
+        referCode: form.referCode.trim().toUpperCase(),
+        commissionPercentage: Number(form.commissionPercentage),
+        uplineBonusPercentage: Number(form.uplineBonusPercentage),
+      });
+      await onSaved(member ? "Member updated." : "Member created. Add a coupon before using the portal.");
+    } catch (error) {
+      setErrors({ form: messageOf(error) });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
-    <Table.Row className={accentClass}>
-      <InlineCell error={errors.name}>
-        <Input size="sm" placeholder="Full Name" value={form.name}
-          onChange={(e) => set("name", e.target.value)} className="min-w-[120px]" />
-      </InlineCell>
-
-      <InlineCell error={errors.mobile}>
-        <Input size="sm" placeholder="Mobile" type="tel" maxLength={10}
-          value={form.mobile}
-          onChange={(e) => set("mobile", e.target.value.replace(/\D/g, "").slice(0, 10))}
-          className="min-w-[110px]" />
-      </InlineCell>
-
-      <InlineCell error={errors.password}>
-        <Input size="sm" placeholder="Password" type="password"
-          value={form.password}
-          onChange={(e) => set("password", e.target.value)}
-          className="min-w-[110px]" />
-      </InlineCell>
-
-      <InlineCell error={errors.assign_coupon_id}>
-        {/* <Input size="sm"  placeholder="Coupon ID"
-          value={form.assign_coupon_id}
-          // isDisabled={true}
-          onChange={(e) => set("assign_coupon_id", e.target.value.toUpperCase())}
-          className="min-w-[100px] font-mono" /> */}
-      </InlineCell>
-
-      <Table.Cell>
-        <Switch isSelected={form.active} size="sm"
-          onChange={(e) => set("active", e.target.checked)} />
-      </Table.Cell>
-
-      <Table.Cell>
-        <div className="flex items-center gap-1">
-          <Tooltip>
-            <Tooltip.Trigger>
-              <Button isIconOnly size="sm" variant="ghost" aria-label="Save"
-                className="text-success" onPress={handleSave} isPending={saving}>
-                <IconCheck />
-              </Button>
-            </Tooltip.Trigger>
-            <Tooltip.Content><Tooltip.Arrow />Save</Tooltip.Content>
-          </Tooltip>
-          <Tooltip>
-            <Tooltip.Trigger>
-              <Button isIconOnly size="sm" variant="ghost" aria-label="Cancel"
-                className="text-muted" onPress={onCancel} isDisabled={saving}>
-                <IconX />
-              </Button>
-            </Tooltip.Trigger>
-            <Tooltip.Content><Tooltip.Arrow />Cancel</Tooltip.Content>
-          </Tooltip>
-        </div>
-      </Table.Cell>
-    </Table.Row>
+    <form onSubmit={save} className="mb-6 rounded-2xl border border-indigo-200 bg-indigo-50/40 p-5 dark:border-indigo-900 dark:bg-indigo-950/20">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div><h2 className="font-bold">{member ? `Edit ${member.name}` : "Add Marketing Member"}</h2><p className="text-xs text-gray-500">Only Admin controls email, parent assignment and commission.</p></div>
+        <button type="button" onClick={onCancel} disabled={saving} className="rounded-lg px-3 py-2 text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800">Close</button>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <Field label="Full name" error={errors.name}><input className={inputClass} value={form.name} maxLength={80} onChange={event => set("name", event.target.value)} /></Field>
+        <Field label="Login email" error={errors.loginEmail} hint="OTP will be sent only to this registered email"><input className={inputClass} type="email" autoComplete="off" value={form.loginEmail} maxLength={254} onChange={event => set("loginEmail", event.target.value)} placeholder="member@example.com" /></Field>
+        <Field label="Mobile (profile only)" error={errors.mobile} hint="Mobile OTP is disabled"><input className={inputClass} inputMode="numeric" value={form.mobile} maxLength={10} onChange={event => set("mobile", event.target.value.replace(/\D/g, "").slice(0, 10))} /></Field>
+        <Field label="Parent Marketing member" hint="Leave blank for a root member"><select className={inputClass} value={form.parentMteamId} onChange={event => set("parentMteamId", event.target.value)}><option value="">No parent (root)</option>{parentOptions.map(item => <option key={item.id} value={item.id}>{item.name} · {item.commissionPercentage}%</option>)}</select></Field>
+        <Field label="Member commission %" error={errors.commissionPercentage} hint={parent ? `Cannot exceed ${parent.commissionPercentage}%` : "Root limit: 100%"}><input className={inputClass} type="number" min="0" max={parent?.commissionPercentage ?? 100} step="0.01" value={form.commissionPercentage} onChange={event => set("commissionPercentage", event.target.value)} /></Field>
+        <Field label="Parent bonus %" error={errors.uplineBonusPercentage} hint="Parent earns this % of this member's commission"><input className={inputClass} type="number" min="0" max="100" step="0.01" value={form.uplineBonusPercentage} onChange={event => set("uplineBonusPercentage", event.target.value)} /></Field>
+        <Field label="Refer code" error={errors.referCode} hint="Optional until coupon is assigned"><input className={`${inputClass} font-mono uppercase`} value={form.referCode} maxLength={6} onChange={event => set("referCode", event.target.value.replace(/[^A-Za-z0-9]/g, "").toUpperCase())} /></Field>
+        <Field label="Account status"><span className="flex h-11 items-center gap-3 rounded-xl border border-gray-200 bg-white px-3 font-normal dark:border-gray-700 dark:bg-gray-950"><input type="checkbox" checked={form.active} onChange={event => set("active", event.target.checked)} /><span>{form.active ? "Active" : "Inactive"}</span></span></Field>
+      </div>
+      {errors.form && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm text-red-600 dark:bg-red-950/30">{errors.form}</p>}
+      <button disabled={saving} className="mt-5 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white disabled:opacity-50">{saving ? "Saving…" : member ? "Save Changes" : "Create Member"}</button>
+    </form>
   );
 }
 
-// ── Read-only row ───────────────────────────────────────────
-const ReadOnlyRow = ({ user, onEdit, onDelete }) => (
-  <Table.Row>
-    <Table.Cell>
-      <span className="font-semibold text-sm text-foreground">{user.name}</span>
-    </Table.Cell>
-    <Table.Cell>
-      <span className="text-sm text-muted">{user.mobile}</span>
-    </Table.Cell>
-    <Table.Cell>
-      <span className="text-sm text-muted tracking-widest">••••••</span>
-    </Table.Cell>
-    <Table.Cell>
-      <Chip variant="warning" size="sm" className="font-mono font-semibold">
-        {user.assign_coupon_id}
-      </Chip>
-    </Table.Cell>
-    <Table.Cell>
-      <Chip variant={user.active ? "success" : "danger"} size="sm">
-        {user.active ? "Active" : "Inactive"}
-      </Chip>
-    </Table.Cell>
-    <Table.Cell>
-      <div className="flex items-center gap-1">
-        <Tooltip>
-          <Tooltip.Trigger>
-            <Button isIconOnly size="sm" variant="ghost" aria-label="Edit"
-              className="text-accent" onPress={() => onEdit(user)}>
-              <IconEdit />
-            </Button>
-          </Tooltip.Trigger>
-          <Tooltip.Content><Tooltip.Arrow />Edit</Tooltip.Content>
-        </Tooltip>
-        <Tooltip>
-          <Tooltip.Trigger>
-            <Button isIconOnly size="sm" variant="ghost" aria-label="Delete"
-              className="text-danger" onPress={() => onDelete(user)}>
-              <IconDelete />
-            </Button>
-          </Tooltip.Trigger>
-          <Tooltip.Content><Tooltip.Arrow />Delete</Tooltip.Content>
-        </Tooltip>
-      </div>
-    </Table.Cell>
-  </Table.Row>
-);
-
-// ── Pagination bar ──────────────────────────────────────────
-function Pagination({ page, totalPages, pageSize, onPage, onPageSize }) {
-  // Show at most 5 page buttons with ellipsis
-  const pages = useMemo(() => {
-    if (totalPages <= 5) return Array.from({ length: totalPages }, (_, i) => i + 1);
-    if (page <= 3) return [1, 2, 3, 4, "…", totalPages];
-    if (page >= totalPages - 2) return [1, "…", totalPages - 3, totalPages - 2, totalPages - 1, totalPages];
-    return [1, "…", page - 1, page, page + 1, "…", totalPages];
-  }, [page, totalPages]);
-
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-3 mt-4 px-1">
-      {/* Page-size selector */}
-      <div className="flex items-center gap-2 text-sm text-muted">
-        <span>Rows per page:</span>
-        <div className="flex gap-1">
-          {PAGE_OPTIONS.map((n) => (
-            <button
-              key={n}
-              onClick={() => onPageSize(n)}
-              className={`px-2 py-0.5 rounded text-xs font-semibold border transition-colors
-                ${pageSize === n
-                  ? "bg-primary text-primary-foreground border-primary"
-                  : "border-divider text-muted hover:border-primary/50 hover:text-foreground"
-                }`}
-            >
-              {n}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Page buttons */}
-      <div className="flex items-center gap-1">
-        <Button isIconOnly size="sm" variant="ghost" aria-label="Previous page"
-          onPress={() => onPage(page - 1)} isDisabled={page === 1}>
-          <IconChevronLeft />
-        </Button>
-
-        {pages.map((p, i) =>
-          p === "…" ? (
-            <span key={`ellipsis-${i}`} className="px-1 text-muted text-sm select-none">…</span>
-          ) : (
-            <button
-              key={p}
-              onClick={() => onPage(p)}
-              className={`w-8 h-8 rounded text-sm font-semibold transition-colors
-                ${p === page
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted hover:bg-default/40 hover:text-foreground"
-                }`}
-            >
-              {p}
-            </button>
-          )
-        )}
-
-        <Button isIconOnly size="sm" variant="ghost" aria-label="Next page"
-          onPress={() => onPage(page + 1)} isDisabled={page === totalPages || totalPages === 0}>
-          <IconChevronRight />
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-// ════════════════════════════════════════════════════════════
-//  MarketingTeam
-// ════════════════════════════════════════════════════════════
 export default function MarketingTeam() {
-  const [users,      setUsers]      = useState([]);
-  const [loading,    setLoading]    = useState(true);
-  const [showAddRow, setShowAddRow] = useState(false);
-  const [editingId,  setEditingId]  = useState(null);
-  const [search,     setSearch]     = useState("");
-  const [page,       setPage]       = useState(1);
-  const [pageSize,   setPageSize]   = useState(10);
+  const [members, setMembers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(undefined);
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState(null);
+  const { requestDelete, DeleteAuthModal, BlockedToast } = useAdminDeleteGuard();
 
-  // ── Initial fetch (runs once) ─────────────────────────────
-  const fetchUsers = useCallback(async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const q = query(collection(db, COLLECTION), orderBy("createdAt", "desc"));
-      const snap = await getDocs(q);
-      setUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    } catch (err) {
-      console.error("Fetch error:", err);
+      const result = await httpsCallable(functions, "panelListMarketingHierarchy")({});
+      setMembers(result.data.members || []);
+    } catch (error) {
+      setStatus({ type: "error", text: messageOf(error) });
     } finally {
       setLoading(false);
     }
   }, []);
+  useEffect(() => { void load(); }, [load]);
 
-  useEffect(() => { fetchUsers(); }, [fetchUsers]);
-
-  // ── Search filter → memoized ──────────────────────────────
+  const ordered = useMemo(() => {
+    const byId = new Map(members.map(member => [member.id, member]));
+    const children = new Map();
+    for (const member of members) {
+      const parentId = byId.has(member.parentMteamId) ? member.parentMteamId : "";
+      children.set(parentId, [...(children.get(parentId) || []), member]);
+    }
+    for (const list of children.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+    const result = [], visited = new Set();
+    const visit = member => { if (visited.has(member.id)) return; visited.add(member.id); result.push(member); for (const child of children.get(member.id) || []) visit(child); };
+    for (const root of children.get("") || []) visit(root);
+    for (const member of members) visit(member);
+    return result;
+  }, [members]);
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return users;
-    return users.filter((u) =>
-      u.name?.toLowerCase().includes(q) ||
-      u.mobile?.includes(q) ||
-      u.assign_coupon_id?.toLowerCase().includes(q)
-    );
-  }, [users, search]);
+    const needle = search.trim().toLowerCase();
+    if (!needle) return ordered;
+    return ordered.filter(member => [member.name, member.loginEmail, member.mobile, member.referCode, member.parentName].some(value => String(value || "").toLowerCase().includes(needle)));
+  }, [ordered, search]);
 
-  // ── Pagination → memoized ─────────────────────────────────
-  const totalPages  = useMemo(() => Math.max(1, Math.ceil(filtered.length / pageSize)), [filtered.length, pageSize]);
-  const currentPage = useMemo(() => Math.min(page, totalPages), [page, totalPages]);
-  const pageSlice   = useMemo(() => {
-    const start = (currentPage - 1) * pageSize;
-    return filtered.slice(start, start + pageSize);
-  }, [filtered, currentPage, pageSize]);
-
-  const handleSearch = useCallback((val) => { setSearch(val); setPage(1); }, []);
-  const handlePageSize = useCallback((n) => { setPageSize(n); setPage(1); }, []);
-
-  // ── Optimistic ADD ────────────────────────────────────────
-  const handleAdd = useCallback(async (form) => {
-    // Optimistic: prepend a temp record immediately
-    const tempId = `__temp_${Date.now()}`;
-    const tempRecord = { id: tempId, ...form, createdAt: null, updatedAt: null };
-    setUsers((prev) => [tempRecord, ...prev]);
-    setShowAddRow(false);
-    try {
-      const ref = await addDoc(collection(db, COLLECTION), {
-        ...form, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
-      });
-      // Swap temp with real id
-      setUsers((prev) => prev.map((u) => u.id === tempId ? { ...u, id: ref.id } : u));
-    } catch (err) {
-      // Rollback on failure
-      console.error("Add error:", err);
-      setUsers((prev) => prev.filter((u) => u.id !== tempId));
-    }
-  }, []);
-
-  // ── Optimistic EDIT ───────────────────────────────────────
-  const handleInlineSave = useCallback(async (userId, form) => {
-    const previous = users.find((u) => u.id === userId);
-    // Optimistic: update local state immediately
-    setUsers((prev) => prev.map((u) => u.id === userId ? { ...u, ...form } : u));
-    setEditingId(null);
-    try {
-      await updateDoc(doc(db, COLLECTION, userId), { ...form, updatedAt: serverTimestamp() });
-    } catch (err) {
-      // Rollback on failure
-      console.error("Save error:", err);
-      if (previous) setUsers((prev) => prev.map((u) => u.id === userId ? previous : u));
-    }
-  }, [users]);
-
-  // ── Optimistic DELETE ─────────────────────────────────────
-  const { requestDelete, DeleteAuthModal, BlockedToast } = useAdminDeleteGuard();
-
-  const handleDelete = useCallback((user) => {
-    const confirmed = window.confirm(`Delete "${user.name}"? This action cannot be undone.`);
-    if (!confirmed) return;
+  const saved = async text => { setEditing(undefined); setStatus({ type: "ok", text }); await load(); };
+  const remove = member => {
+    if (!window.confirm(`Delete ${member.name}? Members with a team or sales history cannot be deleted.`)) return;
     requestDelete(async () => {
-      // Optimistic: remove from local state immediately
-      setUsers((prev) => prev.filter((u) => u.id !== user.id));
-      // If deleting adjusted us past last page, step back
-      setPage((p) => {
-        const newTotal = Math.max(1, Math.ceil((filtered.length - 1) / pageSize));
-        return Math.min(p, newTotal);
-      });
       try {
-        await deleteDoc(doc(db, COLLECTION, user.id));
-      } catch (err) {
-        // Rollback on failure
-        console.error("Delete error:", err);
-        setUsers((prev) => [user, ...prev]);
-      }
+        await httpsCallable(functions, "panelDeleteMarketingMember")({ memberId: member.id });
+        setStatus({ type: "ok", text: "Member deleted." });
+        await load();
+      } catch (error) { setStatus({ type: "error", text: messageOf(error) }); }
     });
-  }, [filtered.length, pageSize, requestDelete]);
+  };
 
-  const openEdit = useCallback((u) => { setEditingId(u.id); setShowAddRow(false); }, []);
-  const openAdd  = useCallback(() => { setShowAddRow(true); setEditingId(null); }, []);
-
-  // ── Render ────────────────────────────────────────────────
   return (
-    <div className="p-4 md:p-6 max-w-6xl mx-auto">
-
-      {/* ── Header card ──────────────────────────────────── */}
-      <Card className="mb-6">
-        <Card.Header className="flex items-center justify-between gap-4 px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-accent/10 text-accent"><IconUsers /></div>
-            <div>
-              <Card.Title className="text-xl font-bold tracking-tight">Marketing Team</Card.Title>
-              <Card.Description className="text-xs">Manage team members, coupons &amp; access</Card.Description>
-            </div>
-          </div>
-          <Button variant="primary" size="sm" className="gap-1 font-semibold"
-            onPress={openAdd} isDisabled={showAddRow}>
-            <IconAdd /> Add Member
-          </Button>
-        </Card.Header>
-
-        {/* Stats + search bar */}
-        <Card.Content className="px-6 py-3 border-t border-divider flex flex-wrap items-center justify-between gap-3">
-          <p className="text-sm text-muted">
-            <span className="font-semibold text-foreground">{users.length}</span> members
-            {search && (
-              <> &nbsp;·&nbsp; <span className="text-accent font-semibold">{filtered.length}</span> matched</>
-            )}
-          </p>
-          <div className="relative w-56">
-            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none">
-              <IconSearch />
-            </span>
-            <Input
-              size="sm"
-              placeholder="Search name, mobile, coupon…"
-              value={search}
-              onChange={(e) => handleSearch(e.target.value)}
-              className="pl-8 w-full"
-            />
-          </div>
-        </Card.Content>
-      </Card>
-
-      {/* ── Loading ───────────────────────────────────────── */}
-      {loading && (
-        <div className="flex justify-center items-center py-20"><Spinner size="md" /></div>
-      )}
-
-      {/* ── Table ─────────────────────────────────────────── */}
-      {!loading && (
-        <>
-          <Table>
-            <Table.ScrollContainer>
-              <Table.Content aria-label="Marketing Team Members">
-                <Table.Header>
-                  <Table.Column isRowHeader>Name</Table.Column>
-                  <Table.Column>Mobile</Table.Column>
-                  <Table.Column>Password</Table.Column>
-                  <Table.Column>Coupon ID</Table.Column>
-                  <Table.Column>Status</Table.Column>
-                  <Table.Column>Actions</Table.Column>
-                </Table.Header>
-
-                <Table.Body>
-                  {/* Add row pinned at top */}
-                  {showAddRow && (
-                    <InputRow
-                      initial={DEFAULT_FORM}
-                      accentClass="bg-primary/5 border-l-2 border-l-primary"
-                      onSave={handleAdd}
-                      onCancel={() => setShowAddRow(false)}
-                    />
-                  )}
-
-                  {/* Current page rows */}
-                  {pageSlice.map((user) =>
-                    editingId === user.id ? (
-                      <InputRow
-                        key={user.id}
-                        initial={{
-                          name: user.name || "",
-                          mobile: user.mobile || "",
-                          password: user.password || "",
-                          assign_coupon_id: user.assign_coupon_id || "",
-                          active: user.active ?? true,
-                        }}
-                        accentClass="bg-accent/5 border-l-2 border-l-accent"
-                        onSave={(form) => handleInlineSave(user.id, form)}
-                        onCancel={() => setEditingId(null)}
-                      />
-                    ) : (
-                      <ReadOnlyRow
-                        key={user.id}
-                        user={user}
-                        onEdit={openEdit}
-                        onDelete={handleDelete}
-                      />
-                    )
-                  )}
-
-                  {/* Empty states */}
-                  {!showAddRow && filtered.length === 0 && (
-                    <Table.Row>
-                      <Table.Cell colSpan={6}>
-                        <div className="text-center py-10 text-muted text-sm">
-                          {search
-                            ? <>No results for <strong>"{search}"</strong>. Try a different search.</>
-                            : <>No members yet. Click <strong>Add Member</strong> to get started.</>
-                          }
-                        </div>
-                      </Table.Cell>
-                    </Table.Row>
-                  )}
-                </Table.Body>
-              </Table.Content>
-            </Table.ScrollContainer>
-          </Table>
-
-          {/* ── Pagination ─────────────────────────────────── */}
-          {filtered.length > 0 && (
-            <Pagination
-              page={currentPage}
-              totalPages={totalPages}
-              pageSize={pageSize}
-              onPage={setPage}
-              onPageSize={handlePageSize}
-            />
-          )}
-
-          {/* Row range label */}
-          {filtered.length > 0 && (
-            <p className="text-xs text-muted text-right mt-1.5 pr-1">
-              Showing{" "}
-              <span className="font-semibold text-foreground">
-                {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, filtered.length)}
-              </span>{" "}
-              of{" "}
-              <span className="font-semibold text-foreground">{filtered.length}</span>
-            </p>
-          )}
-        </>
-      )}
+    <div className="mx-auto max-w-7xl p-4 md:p-6">
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white p-5 dark:border-gray-800 dark:bg-gray-900">
+        <div><h1 className="text-xl font-bold">Marketing Hierarchy</h1><p className="text-sm text-gray-500">{members.length} members · Admin-managed parent, email and percentage</p></div>
+        <button onClick={() => setEditing(null)} disabled={editing !== undefined} className="rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">+ Add Member</button>
+      </div>
+      {editing !== undefined && <MemberForm key={editing?.id || "new"} member={editing} members={members} onSaved={saved} onCancel={() => setEditing(undefined)} />}
+      {status && <div className={`mb-4 rounded-xl p-3 text-sm ${status.type === "ok" ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30" : "bg-red-50 text-red-700 dark:bg-red-950/30"}`}>{status.text}</div>}
+      <div className="overflow-hidden rounded-2xl border bg-white dark:border-gray-800 dark:bg-gray-900">
+        <div className="border-b p-4 dark:border-gray-800"><input className={`${inputClass} max-w-md`} value={search} onChange={event => setSearch(event.target.value)} placeholder="Search name, email, mobile, parent or code…" /></div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1050px] text-left text-sm">
+            <thead className="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-gray-800/70"><tr>{["Member", "Login Email", "Mobile", "Parent", "Commission", "Parent Bonus", "Coupon / Refer", "Status", "Actions"].map(title => <th key={title} className="px-4 py-3">{title}</th>)}</tr></thead>
+            <tbody className="divide-y dark:divide-gray-800">
+              {filtered.map(member => <tr key={member.id} className="hover:bg-gray-50/70 dark:hover:bg-gray-800/30">
+                <td className="px-4 py-3"><div style={{ paddingLeft: `${Math.min(Number(member.level || 0), 6) * 14}px` }}><div className="font-bold">{member.level ? "↳ " : ""}{member.name}</div><div className="text-xs text-gray-400">Level {member.level || 0}</div></div></td>
+                <td className="px-4 py-3">{member.loginEmail ? <span>{member.loginEmail}</span> : <span className="font-semibold text-red-500">Email required</span>}</td>
+                <td className="px-4 py-3 text-gray-500">{member.mobile}</td>
+                <td className="px-4 py-3">{member.parentName || <span className="text-gray-400">Root</span>}</td>
+                <td className="px-4 py-3"><span className="rounded-full bg-violet-50 px-2.5 py-1 font-bold text-violet-700 dark:bg-violet-950/30">{member.commissionPercentage}%</span></td>
+                <td className="px-4 py-3">{member.parentMteamId ? `${member.uplineBonusPercentage}%` : "—"}</td>
+                <td className="px-4 py-3"><div className="font-mono text-xs">{member.assign_coupon_id || "Not assigned"}</div><div className="font-mono text-xs text-gray-400">{member.referCode || "No refer code"}</div></td>
+                <td className="px-4 py-3"><span className={`rounded-full px-2.5 py-1 text-xs font-bold ${member.active ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30" : "bg-red-50 text-red-700 dark:bg-red-950/30"}`}>{member.active ? "Active" : "Inactive"}</span></td>
+                <td className="px-4 py-3"><div className="flex gap-2"><button onClick={() => setEditing(member)} className="rounded-lg border px-3 py-1.5 text-indigo-600 dark:border-gray-700">Edit</button><button onClick={() => remove(member)} className="rounded-lg border px-3 py-1.5 text-red-600 dark:border-gray-700">Delete</button></div></td>
+              </tr>)}
+              {!loading && filtered.length === 0 && <tr><td colSpan="9" className="px-4 py-14 text-center text-gray-400">No Marketing members found.</td></tr>}
+              {loading && <tr><td colSpan="9" className="px-4 py-14 text-center text-gray-400">Loading hierarchy…</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
       {DeleteAuthModal}
       {BlockedToast}
     </div>
