@@ -8,6 +8,7 @@ export const MLM_SELECT_TYPES = [
   { name: "Today Trending", value: "Today_Trending" },
   { name: "Rank Promotion", value: "Rank_Promotion" },
   { name: "Rank Promotion B", value: "Rank_Promotion_B" },
+  { name: "Rank Promotion C", value: "Rank_Promotion_C" },
   { name: "Capping", value: "Capping" },
   { name: "Meeting", value: "Meeting" },
   { name: "Training", value: "Training" },
@@ -57,6 +58,7 @@ export const nextId = () => ++_idCounter;
 export const RANK_PROMOTION_TYPES = [
   "Rank_Promotion",
   "Rank_Promotion_B",
+  "Rank_Promotion_C",
 ];
 
 export const isRankPromotionType = (selectType) =>
@@ -71,8 +73,10 @@ export const emptyGraphicsLink = () => ({
   suggestionImage: "",
   Date: "",
   nameImageUrl: "",
-  rankNameImageUrl: "", // Rank Promotion only — image for the rank name
+  rankNameImageUrl: "", // Rank Promotion variants only — image for the rank name
   bannerId: "",
+  mute_footer: "", // Rank Promotion variants only — profile mute footer image
+  mute_income: "", // Rank Promotion variants only — profile mute this-week income image
   position: "left",
   incmNameId: "",
   Filter: "true",

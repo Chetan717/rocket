@@ -98,6 +98,7 @@ export function GraphicsLinkRow({
   // ── Derived from selType ──────────────────────────────────────────────────
   const canShowNameImage = isAchievement(selType) || isIncome(selType);
   const canShowRankNameImage = isRankPromotionType(selType);
+  const canShowProfileMuteImages = isRankPromotionType(selType);
   const canShowBannerId = showBannerId(selType);
   const canShowPosition = showPosition(selType);
   const filterOptions = getFilterOptions(selType);
@@ -268,6 +269,31 @@ export function GraphicsLinkRow({
                     placeholder="Paste URL or click ↑ to upload"
                   />
                 </div>
+              )}
+
+              {/* Profile mute images — ONLY Rank Promotion / B / C */}
+              {canShowProfileMuteImages && (
+                <>
+                  <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-emerald-50/50 dark:bg-emerald-500/5 border border-emerald-100 dark:border-emerald-500/20">
+                    <FieldLabel>Profile Mute Footer Image</FieldLabel>
+                    <ImageUploadInput
+                      value={item.mute_footer || ""}
+                      onChange={(v) => update("mute_footer", v)}
+                      storagePath="templates/profile-mute-footer"
+                      placeholder="Paste URL or click ↑ to upload profile mute footer image"
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-emerald-50/50 dark:bg-emerald-500/5 border border-emerald-100 dark:border-emerald-500/20">
+                    <FieldLabel>Profile Mute This Week Income Image</FieldLabel>
+                    <ImageUploadInput
+                      value={item.mute_income || ""}
+                      onChange={(v) => update("mute_income", v)}
+                      storagePath="templates/profile-mute-income"
+                      placeholder="Paste URL or click ↑ to upload profile mute this week income image"
+                    />
+                  </div>
+                </>
               )}
 
               {/* Date */}

@@ -68,6 +68,8 @@ test("all template image and video fields are collected recursively and deduplic
       nameImageUrl: downloadUrl("templates/name-images/name.webp"),
       rankNameImageUrl: downloadUrl("templates/rank-name-images/rank.webp"),
       bannerId: downloadUrl("templates/badges/badge.webp"),
+      mute_footer: downloadUrl("templates/profile-mute-footer/footer.webp"),
+      mute_income: downloadUrl("templates/profile-mute-income/income.webp"),
     }],
   }, BUCKET);
 
@@ -75,6 +77,8 @@ test("all template image and video fields are collected recursively and deduplic
     "templates/badges/badge.webp",
     "templates/graphics-videos/background.mp4",
     "templates/name-images/name.webp",
+    "templates/profile-mute-footer/footer.webp",
+    "templates/profile-mute-income/income.webp",
     "templates/rank-name-images/rank.webp",
     "templates/showcase-form/form.webp",
     "templates/showcase/main.webp",
