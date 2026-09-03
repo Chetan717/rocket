@@ -8,6 +8,7 @@ import {
 } from "recharts";
 import * as XLSX from "xlsx";
 import { COLLECTIONS } from "../../collections";
+import { formatLastDownload } from "../../Utils/lastDownload";
 
 const COLORS = {
   violet: "#7c3aed", green: "#10b981", red: "#ef4444",
@@ -40,6 +41,10 @@ function fmt(val) {
   const d = toDate(val);
   if (!d) return "—";
   return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+function mobileLookupKey(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits.length >= 10 ? digits.slice(-10) : String(value || "").trim();
 }
 function monthLabel(d) {
   return d.toLocaleDateString("en-IN", { month: "short", year: "2-digit" });
@@ -126,7 +131,7 @@ export default function UserSubscriptionDashboard() {
   const userMap = useMemo(() => {
     const m = {};
     users.forEach(u => {
-      const k = String(u.mobileNo || u.mobile || u.phone || "").trim();
+      const k = mobileLookupKey(u.mobileNo || u.mobile || u.phone);
       if (k) m[k] = u;
     });
     return m;
@@ -135,7 +140,7 @@ export default function UserSubscriptionDashboard() {
   const profileMap = useMemo(() => {
     const m = {};
     profiles.forEach(p => {
-      const k = String(p.mobile || p.mobileNo || "").trim();
+      const k = mobileLookupKey(p.mobile || p.mobileNo);
       if (k) m[k] = p;
     });
     return m;
@@ -144,8 +149,9 @@ export default function UserSubscriptionDashboard() {
   // ── Enrich each subscription ─────────────────────────────────
   const allEnriched = useMemo(() => subs.map(s => {
     const mobile  = String(s.mobileNo || s.mobile || "").trim();
-    const user    = userMap[mobile] || {};
-    const profile = profileMap[mobile] || {};
+    const mobileKey = mobileLookupKey(mobile);
+    const user    = userMap[mobileKey] || {};
+    const profile = profileMap[mobileKey] || {};
     const companyId = profile.companyId || s.companyId || "";
     const companyFromMap = companyId ? (companyMap[companyId]?.name || "") : "";
     const companyName = profile.companyName || companyFromMap || s.company || s.companyName || "—";
@@ -162,6 +168,7 @@ export default function UserSubscriptionDashboard() {
       designation: profile.designation || "—",
       referCode:   user.referCode || profile.referCode || "—",
       referredBy:  user.referredBy || profile.referredBy || "—",
+      lastDownloadAt: user.lastDownloadAt || null,
       isActive,
       isExpired,
       purchaseDate,
@@ -182,6 +189,7 @@ export default function UserSubscriptionDashboard() {
           designation: s.designation,
           referCode: s.referCode,
           referredBy: s.referredBy,
+          lastDownloadAt: s.lastDownloadAt,
           subs: [],
         };
       }
@@ -354,6 +362,7 @@ export default function UserSubscriptionDashboard() {
           "Plan":         s.plan || s.planType || "—",
           "Status":       s.isActive ? "Active" : "Expired",
           "Purchase Date":fmt(s.PurchaseAt),
+          "Last Download":formatLastDownload(g.lastDownloadAt),
           "Expiry Date":  s.expirydate || "—",
           "Duration (days)": s.duration || "—",
           "Amount (₹)":   s.PaymentAmount ?? "—",
@@ -564,14 +573,14 @@ export default function UserSubscriptionDashboard() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-100">
-                  {["#", "User", "Mobile", "Company", "Active Plan", "Total Plans", "Last Purchase", "Expiry Date", "Revenue ₹", "History"].map(h => (
+                  {["#", "User", "Mobile", "Company", "Active Plan", "Total Plans", "Last Purchase", "Last Download", "Expiry Date", "Revenue ₹", "History"].map(h => (
                     <th key={h} className="px-3 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {pageSlice.length === 0
-                  ? <tr><td colSpan={10} className="py-16 text-center text-gray-400 text-sm">No records match your filters.</td></tr>
+                  ? <tr><td colSpan={11} className="py-16 text-center text-gray-400 text-sm">No records match your filters.</td></tr>
                   : pageSlice.map((g, i) => {
                     const isExpanded = expandedMobile === g.mobile;
                     const latest = g.latestActive || g.latestSub;
@@ -601,6 +610,7 @@ export default function UserSubscriptionDashboard() {
                             <span className="inline-block w-6 h-6 rounded-full bg-blue-50 text-blue-700 text-[11px] font-bold text-center leading-6">{g.totalSubs}</span>
                           </td>
                           <td className="px-3 py-3 text-xs text-gray-600 whitespace-nowrap">{fmt(g.lastPurchase)}</td>
+                          <td className={`px-3 py-3 text-xs whitespace-nowrap font-semibold ${g.lastDownloadAt ? "text-emerald-600" : "text-gray-400"}`}>{formatLastDownload(g.lastDownloadAt)}</td>
                           <td className="px-3 py-3 text-xs text-gray-600 whitespace-nowrap">
                             {latest?.expirydate || "—"}
                           </td>
@@ -614,7 +624,7 @@ export default function UserSubscriptionDashboard() {
                         </tr>
                         {isExpanded && (
                           <tr key={g.mobile + "_exp"} className="bg-violet-50/20">
-                            <td colSpan={10} className="px-6 py-4">
+                            <td colSpan={11} className="px-6 py-4">
                               <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-3">
                                 Subscription History for {g.userName} ({g.totalSubs} plans)
                               </p>
@@ -687,7 +697,7 @@ export default function UserSubscriptionDashboard() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-100">
-                  {["#", "Name", "Mobile", "Company", "Plan", "Type", "Status", "Purchase Date", "Expiry Date", "Duration", "Amount ₹", "Coupon"].map(h => (
+                  {["#", "Name", "Mobile", "Company", "Plan", "Type", "Status", "Purchase Date", "Last Download", "Expiry Date", "Duration", "Amount ₹", "Coupon"].map(h => (
                     <th key={h} className="px-3 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -701,7 +711,7 @@ export default function UserSubscriptionDashboard() {
                     });
                   });
                   const paged = flatSubs.slice((currentPage - 1) * pageSize, currentPage * pageSize);
-                  if (paged.length === 0) return <tr><td colSpan={12} className="py-16 text-center text-gray-400 text-sm">No records.</td></tr>;
+                  if (paged.length === 0) return <tr><td colSpan={13} className="py-16 text-center text-gray-400 text-sm">No records.</td></tr>;
                   return paged.map((s, i) => (
                     <tr key={s._id || i} className="hover:bg-gray-50/80 transition-colors">
                       <td className="px-3 py-3 text-gray-400 text-[11px]">{(currentPage - 1) * pageSize + i + 1}</td>
@@ -712,6 +722,7 @@ export default function UserSubscriptionDashboard() {
                       <td className="px-3 py-3"><span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${s.totalSubs === 1 ? "bg-blue-50 text-blue-700" : "bg-amber-50 text-amber-700"}`}>{s.totalSubs === 1 ? "New" : "Renewal"}</span></td>
                       <td className="px-3 py-3"><span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold ${s.isActive ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-600"}`}><span className={`w-1.5 h-1.5 rounded-full ${s.isActive ? "bg-emerald-500" : "bg-red-400"}`} />{s.isActive ? "Active" : "Expired"}</span></td>
                       <td className="px-3 py-3 text-xs text-gray-600 whitespace-nowrap">{fmt(s.PurchaseAt)}</td>
+                      <td className={`px-3 py-3 text-xs whitespace-nowrap font-semibold ${s.lastDownloadAt ? "text-emerald-600" : "text-gray-400"}`}>{formatLastDownload(s.lastDownloadAt)}</td>
                       <td className="px-3 py-3 text-xs text-gray-600 whitespace-nowrap">{s.expirydate || "—"}</td>
                       <td className="px-3 py-3 text-xs text-gray-500">{s.duration || "—"}</td>
                       <td className="px-3 py-3 font-semibold text-gray-800">₹{s.PaymentAmount ?? "—"}</td>

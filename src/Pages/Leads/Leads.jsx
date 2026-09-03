@@ -3,6 +3,7 @@ import { collection, getDocs, doc, setDoc, updateDoc, getDoc } from "firebase/fi
 import { db } from "../../../Firebase";
 import * as XLSX from "xlsx";
 import { COLLECTIONS } from "../../collections";
+import { formatLastDownload } from "../../Utils/lastDownload";
 
 // ── Icons ────────────────────────────────────────────────────
 const Ico = ({ d, cls = "w-4 h-4" }) => <svg className={cls} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d={d} /></svg>;
@@ -148,6 +149,7 @@ function LeadPanel({ lead, onClose, onSave }) {
                 ["Coupon Code", lead.couponCodes?.join(", ") || "—"],
                 ["Mktg. Member", lead.referredByMteam ? "✅ Assigned" : "—"],
                 ["Joined", fmt(lead.joinDate)],
+                ["Last Download", formatLastDownload(lead.lastDownloadAt)],
               ].map(([k, v]) => (
                 <div key={k}>
                   <p className="text-[10px] text-gray-400 font-semibold uppercase">{k}</p>
@@ -447,6 +449,7 @@ export default function Leads() {
         mobile,
         name: u.name || subNameMap[mobile] || profile?.fullName || profile?.name || "—",
         joinDate: toDate(u.createdAt || u.joinDate || u.registeredAt),
+        lastDownloadAt: u.lastDownloadAt || null,
         hasProfile: !!profile,
         companyName: profile?.companyName || subCompanyMap[mobile] || "—",
         designation: profile?.designation || "—",
@@ -707,6 +710,7 @@ export default function Leads() {
       "Name":              l.name,
       "Mobile":            l.mobile,
       "Joined":            fmt(l.joinDate),
+      "Last Download":     formatLastDownload(l.lastDownloadAt),
       "MLM Profile":       l.hasProfile ? "Yes" : "No",
       "Company":           l.companyName,
       "Designation":       l.designation,
@@ -1063,14 +1067,14 @@ export default function Leads() {
                     <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">#</span>
                   </div>
                 </th>
-                {["User", "Created At", "Mobile", "Password", "Referred By", "Coupon Code", "MLM Profile", "Plan Status", "Plan", "Expiry", "Days Left", "Lead Status", "Follow-up", "Actions"].map(h => (
+                {["User", "Created At", "Last Download", "Mobile", "Password", "Referred By", "Coupon Code", "MLM Profile", "Plan Status", "Plan", "Expiry", "Days Left", "Lead Status", "Follow-up", "Actions"].map(h => (
                   <th key={h} className="px-3 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
               {pageSlice.length === 0
-                ? <tr><td colSpan={15} className="py-16 text-center text-gray-400 text-sm">No leads match your filters.</td></tr>
+                ? <tr><td colSpan={16} className="py-16 text-center text-gray-400 text-sm">No leads match your filters.</td></tr>
                 : pageSlice.map((lead, i) => {
                   const isExpanded = expandedRow === lead.mobile;
                   const days = lead.daysToExpiry;
@@ -1101,6 +1105,7 @@ export default function Leads() {
                           {lead.companyName !== "—" && <div className="text-[10px] text-gray-400">{lead.companyName}</div>}
                         </td>
                         <td className="px-3 py-3 text-xs text-gray-600 whitespace-nowrap">{fmt(lead.joinDate)}</td>
+                        <td className={`px-3 py-3 text-xs whitespace-nowrap font-semibold ${lead.lastDownloadAt ? "text-emerald-600" : "text-gray-400"}`}>{formatLastDownload(lead.lastDownloadAt)}</td>
                         <td className="px-3 py-3 font-mono text-xs text-gray-600">{lead.mobile}</td>
                         <td className="px-3 py-3">
                           <PasswordCell
@@ -1183,7 +1188,7 @@ export default function Leads() {
                       </tr>
                       {isExpanded && (
                         <tr key={lead.mobile + "_exp"} className="bg-violet-50/20">
-                          <td colSpan={15} className="px-6 py-3">
+                          <td colSpan={16} className="px-6 py-3">
                             <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-2">Subscription History ({lead.allSubs.length})</p>
                             <div className="flex flex-wrap gap-2">
                               {lead.allSubs.map((s, si) => (

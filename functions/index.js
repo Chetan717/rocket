@@ -37,6 +37,7 @@ const EMAIL_NODEMAILER = defineString("EMAIL_NODEMAILER", {
   default: "soilbooster717@gmail.com",
 });
 const REGION = "asia-south1";
+const USER_ACTIVITY_REGION = "us-central1";
 const TEMPLATE_STORAGE_CLEANUP_REGION = "us-central1";
 const SESSION_MS = 10 * 60 * 60 * 1000;
 const OTP_MS = 5 * 60 * 1000;
@@ -48,6 +49,24 @@ const EXPO_SEND_URL = "https://exp.host/--/api/v2/push/send";
 const hash = value => crypto.createHash("sha256").update(String(value)).digest("hex");
 const safeTabs = tabs => Array.isArray(tabs) ? [...new Set(tabs.filter(x => OWNER_TABS.includes(x)))].slice(0, 20) : [];
 const cleanText = (value, max = 120) => String(value || "").replace(/[<>]/g, "").trim().slice(0, max);
+const mobile10 = value => {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits.length >= 10 ? digits.slice(-10) : "";
+};
+const authenticatedMobile = request => {
+  const uidMatch = String(request.auth?.uid || "").match(/^mobile_(\d{10})$/);
+  const candidates = [
+    request.auth?.token?.mobileNo,
+    request.auth?.token?.mobile,
+    request.auth?.token?.phone_number,
+    uidMatch?.[1],
+  ];
+  for (const candidate of candidates) {
+    const mobile = mobile10(candidate);
+    if (mobile) return mobile;
+  }
+  return "";
+};
 const ipOf = request => String(request.rawRequest?.headers?.["x-forwarded-for"] || request.rawRequest?.ip || "Unavailable").split(",")[0].trim();
 const locationOf = request => {
   const h = request.rawRequest?.headers || {};
@@ -808,6 +827,70 @@ exports.panelDeleteMarketingCoupon = onCall({ region: REGION, cors: true }, asyn
   await db.collection("_panelAudit").add({ panel: "admin", action: "marketing_coupon_deleted", targetId: couponId, actorUid: request.auth.uid, createdAt: FieldValue.serverTimestamp() });
   return { ok: true };
 });
+
+exports.recordUserDownload = onCall(
+  { region: USER_ACTIVITY_REGION, cors: true },
+  async request => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Please login again.");
+    }
+
+    const mobile = authenticatedMobile(request);
+    if (!mobile) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Verified mobile identity is missing.",
+      );
+    }
+
+    const requestedId = String(
+      request.data?.userDocumentId || "",
+    ).trim();
+    let userDocument = null;
+
+    if (/^[A-Za-z0-9_-]{1,128}$/.test(requestedId)) {
+      const candidate = await db.collection("users").doc(requestedId).get();
+      if (
+        candidate.exists &&
+        mobile10(
+          candidate.data().mobileNo ||
+            candidate.data().mobile ||
+            candidate.data().phone,
+        ) === mobile
+      ) {
+        userDocument = candidate;
+      }
+    }
+
+    if (!userDocument) {
+      const mobileValues = [
+        mobile,
+        Number(mobile),
+        `91${mobile}`,
+        `+91${mobile}`,
+      ];
+      const byMobileNo = await db
+        .collection("users")
+        .where("mobileNo", "in", mobileValues)
+        .limit(5)
+        .get();
+      userDocument =
+        byMobileNo.docs.find(
+          document =>
+            mobile10(document.data().mobileNo) === mobile,
+        ) || null;
+    }
+
+    if (!userDocument) {
+      throw new HttpsError("not-found", "User account was not found.");
+    }
+
+    await userDocument.ref.update({
+      lastDownloadAt: FieldValue.serverTimestamp(),
+    });
+    return { ok: true };
+  },
+);
 
 exports.registerExpoPushToken = onRequest({ region: REGION, cors: true }, async (request, response) => {
   response.set("Cache-Control", "no-store");
