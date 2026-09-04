@@ -75,6 +75,8 @@ export default function VideoUploadInput({
         const storageRef = ref(storage, `${storagePath}/${genName(file)}`);
         const uploadTask = uploadBytesResumable(storageRef, file, {
           contentType: file.type,
+          // Video names are timestamp/random based and never overwritten.
+          cacheControl: "public,max-age=31536000,immutable",
         });
 
         await new Promise((resolve, reject) => {

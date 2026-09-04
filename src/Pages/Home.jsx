@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { collection, getDocs } from "firebase/firestore";
+import { collection, getDocs, getCountFromServer, query, where } from "firebase/firestore";
 import { db } from "../../Firebase";
 import { COLLECTIONS } from "../collections";
 import { getAdminSession } from "../Utils/adminSession";
@@ -172,26 +172,44 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
-      const [userSnap, mteamSnap, subSnap, compSnap, profileSnap, adminSnap] =
-        await Promise.all([
-          getDocs(collection(db, COLLECTIONS.USERS)),
-          getDocs(collection(db, COLLECTIONS.MTEAM)),
-          getDocs(collection(db, COLLECTIONS.SUBSCRIPTION)),
-          getDocs(collection(db, COLLECTIONS.MLMCOMP)),
-          getDocs(collection(db, COLLECTIONS.MLMPROFILES)),
-          isMasterAdmin ? getDocs(collection(db, COLLECTIONS.ADMINUSER)) : Promise.resolve({ docs: [] }),
-        ]);
+      // Only subscription documents are needed client-side for the charts.
+      // The other collections were previously downloaded in full just to read
+      // `.length`. Firestore count aggregations return the exact same totals
+      // while billing only aggregation/index reads instead of every document.
+      const [
+        userCountSnap,
+        mteamCountSnap,
+        inactiveMteamCountSnap,
+        subSnap,
+        compCountSnap,
+        profileCountSnap,
+        adminCountSnap,
+      ] = await Promise.all([
+        getCountFromServer(collection(db, COLLECTIONS.USERS)),
+        getCountFromServer(collection(db, COLLECTIONS.MTEAM)),
+        getCountFromServer(
+          query(collection(db, COLLECTIONS.MTEAM), where("active", "==", false)),
+        ),
+        getDocs(collection(db, COLLECTIONS.SUBSCRIPTION)),
+        getCountFromServer(collection(db, COLLECTIONS.MLMCOMP)),
+        getCountFromServer(collection(db, COLLECTIONS.MLMPROFILES)),
+        isMasterAdmin
+          ? getCountFromServer(collection(db, COLLECTIONS.ADMINUSER))
+          : Promise.resolve(null),
+      ]);
 
-      const users    = userSnap.docs.map((d) => ({ _id: d.id, ...d.data() }));
-      const mteam    = mteamSnap.docs.map((d) => ({ _id: d.id, ...d.data() }));
-      const subs     = subSnap.docs.map((d) => ({ _id: d.id, ...d.data() }));
-      const comps    = compSnap.docs.map((d) => ({ _id: d.id, ...d.data() }));
-      const profiles = profileSnap.docs.map((d) => ({ _id: d.id, ...d.data() }));
-      const admins   = adminSnap.docs.map((d) => ({ _id: d.id, ...d.data() }));
+      const subs = subSnap.docs.map((d) => ({ _id: d.id, ...d.data() }));
+      const totalUsers = userCountSnap.data().count;
+      const totalMteam = mteamCountSnap.data().count;
+      // Existing behaviour considered records with `active` missing as active,
+      // so use total - explicit false rather than count(active == true).
+      const activeMteam = totalMteam - inactiveMteamCountSnap.data().count;
+      const totalCompanies = compCountSnap.data().count;
+      const totalProfiles = profileCountSnap.data().count;
+      const totalAdmins = adminCountSnap?.data().count ?? 0;
 
       const activeSubs  = subs.filter((s) => s.Active === true);
       const expiredSubs = subs.filter((s) => s.Expire === true || s.Active === false);
-      const activeMteam = mteam.filter((m) => m.active !== false);
 
       const monthMap = {};
       subs.forEach((s) => {
@@ -229,15 +247,15 @@ export default function Home() {
       );
 
       setData({
-        totalUsers: users.length,
-        totalMteam: mteam.length,
-        activeMteam: activeMteam.length,
+        totalUsers,
+        totalMteam,
+        activeMteam,
         totalSubs: subs.length,
         activeSubs: activeSubs.length,
         expiredSubs: expiredSubs.length,
-        totalCompanies: comps.length,
-        totalAdmins: admins.length,
-        totalProfiles: profiles.length,
+        totalCompanies,
+        totalAdmins,
+        totalProfiles,
         uniqueSubUsers: uniqueMobiles.size,
         monthlyTrend,
         companySubData,

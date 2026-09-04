@@ -355,12 +355,11 @@ export default function Leads() {
   const fetchAll = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [uSnap, pSnap, sSnap, lSnap, mSnap] = await Promise.all([
+      const [uSnap, pSnap, sSnap, lSnap] = await Promise.all([
         getDocs(collection(db, COLLECTIONS.USERS)),
         getDocs(collection(db, COLLECTIONS.MLMPROFILES)),
         getDocs(collection(db, COLLECTIONS.SUBSCRIPTION)),
         getDocs(collection(db, COLLECTIONS.LEADMANAGEMENT)),
-        getDocs(collection(db, COLLECTIONS.MTEAM)),
       ]);
       setUsers(uSnap.docs.map(d => ({ _id: d.id, ...d.data() })));
       setProfiles(pSnap.docs.map(d => ({ _id: d.id, ...d.data() })));
@@ -368,7 +367,6 @@ export default function Leads() {
       const lm = {};
       lSnap.docs.forEach(d => { lm[d.id] = d.data(); });
       setLeadMgmt(lm);
-      setMteamList(mSnap.docs.map(d => ({ id: d.id, ...d.data() })));
     } catch (e) {
       setError("Failed to load data: " + e.message);
     } finally {
@@ -377,6 +375,18 @@ export default function Leads() {
   }, []);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  const openAssignModal = useCallback(async () => {
+    try {
+      // Most visits only review/filter/export leads. Load the full marketing
+      // team collection only if the user actually opens Batch Assign.
+      const mSnap = await getDocs(collection(db, COLLECTIONS.MTEAM));
+      setMteamList(mSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setShowAssignModal(true);
+    } catch (e) {
+      setAssignResult({ success: false, error: "Failed to load Marketing Team: " + e.message });
+    }
+  }, []);
 
   // ── Build leads ──────────────────────────────────────────
   const leads = useMemo(() => {
@@ -1038,7 +1048,7 @@ export default function Leads() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => setShowAssignModal(true)}
+            <button onClick={openAssignModal}
               className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-white text-violet-700 text-sm font-bold hover:bg-violet-50 transition-colors">
               <IcoLink /> Assign to Marketing Member
             </button>

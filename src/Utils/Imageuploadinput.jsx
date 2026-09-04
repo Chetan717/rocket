@@ -95,6 +95,8 @@ export default function ImageUploadInput({
         const storageRef  = ref(storage, `${storagePath}/${genName()}`);
         const uploadTask  = uploadBytesResumable(storageRef, webpBlob, {
           contentType: "image/webp",
+          // Upload names are unique, so these objects are immutable.
+          cacheControl: "public,max-age=31536000,immutable",
         });
 
         await new Promise((resolve, reject) => {
