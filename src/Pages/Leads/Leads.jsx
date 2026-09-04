@@ -3,7 +3,7 @@ import { collection, getDocs, doc, setDoc, updateDoc, getDoc } from "firebase/fi
 import { db } from "../../../Firebase";
 import * as XLSX from "xlsx";
 import { COLLECTIONS } from "../../collections";
-import { formatLastDownload } from "../../Utils/lastDownload";
+import { formatLastDownload, toDownloadDate } from "../../Utils/lastDownload";
 
 // ── Icons ────────────────────────────────────────────────────
 const Ico = ({ d, cls = "w-4 h-4" }) => <svg className={cls} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d={d} /></svg>;
@@ -42,6 +42,20 @@ function fmt(val) {
 function couponCodeOf(value) {
   const code = String(value || "").trim();
   return code ? code.toUpperCase() : "";
+}
+function inputDateBoundary(value, endOfDay = false) {
+  if (!value) return null;
+  const [year, month, day] = String(value).split("-").map(Number);
+  if (!year || !month || !day) return null;
+  return endOfDay
+    ? new Date(year, month - 1, day, 23, 59, 59, 999)
+    : new Date(year, month - 1, day, 0, 0, 0, 0);
+}
+function dateInputValue(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function PasswordCell({ value, revealed, onToggle }) {
@@ -334,6 +348,9 @@ export default function Leads() {
   const [filterCoupon,   setFilterCoupon]   = useState("all");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo,   setFilterDateTo]   = useState("");
+  const [filterDownload, setFilterDownload] = useState("all");
+  const [filterDownloadFrom, setFilterDownloadFrom] = useState("");
+  const [filterDownloadTo,   setFilterDownloadTo]   = useState("");
   const [search,         setSearch]         = useState("");
   const [page,           setPage]           = useState(1);
   const [pageSize,       setPageSize]       = useState(20);
@@ -557,6 +574,41 @@ export default function Leads() {
     return rows;
   }, [leads, filterDateFrom, filterDateTo]);
 
+  // ── Last-download range ──────────────────────────────────
+  // The existing USERS.lastDownloadAt field is reused here; no extra Firebase
+  // collection/read is introduced. With no custom dates, the range is this month.
+  const downloadRange = useMemo(() => {
+    const now = new Date();
+    const hasCustomRange = !!(filterDownloadFrom || filterDownloadTo);
+    return {
+      from: filterDownloadFrom
+        ? inputDateBoundary(filterDownloadFrom)
+        : hasCustomRange ? null : new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0),
+      to: filterDownloadTo
+        ? inputDateBoundary(filterDownloadTo, true)
+        : hasCustomRange ? null : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999),
+      hasCustomRange,
+    };
+  }, [filterDownloadFrom, filterDownloadTo]);
+
+  const isLastDownloadInRange = useCallback((lead) => {
+    const d = toDownloadDate(lead.lastDownloadAt);
+    if (!d) return false;
+    if (downloadRange.from && d < downloadRange.from) return false;
+    if (downloadRange.to && d > downloadRange.to) return false;
+    return true;
+  }, [downloadRange]);
+
+  const downloadStats = useMemo(() => {
+    const downloaded = dateFilteredLeads.filter(isLastDownloadInRange).length;
+    const never = dateFilteredLeads.filter(l => !toDownloadDate(l.lastDownloadAt)).length;
+    return {
+      downloaded,
+      notDownloaded: dateFilteredLeads.length - downloaded,
+      never,
+    };
+  }, [dateFilteredLeads, isLastDownloadInRange]);
+
   // ── Stats ────────────────────────────────────────────────
   const stats = useMemo(() => ({
     total:       dateFilteredLeads.length,
@@ -606,6 +658,10 @@ export default function Leads() {
     if (filterCoupon === "none") rows = rows.filter(l => !l.couponCodes?.length);
     else if (filterCoupon !== "all") rows = rows.filter(l => l.couponCodes?.includes(filterCoupon));
 
+    if (filterDownload === "downloaded") rows = rows.filter(isLastDownloadInRange);
+    else if (filterDownload === "notDownloaded") rows = rows.filter(l => !isLastDownloadInRange(l));
+    else if (filterDownload === "never") rows = rows.filter(l => !toDownloadDate(l.lastDownloadAt));
+
     const q = search.trim().toLowerCase();
     if (q) rows = rows.filter(l =>
       l.name?.toLowerCase().includes(q) ||
@@ -625,7 +681,7 @@ export default function Leads() {
     });
 
     return rows;
-  }, [dateFilteredLeads, statFilter, filterType, filterPlan, filterExpiry, filterStatus, filterCompany, filterCoupon, search]);
+  }, [dateFilteredLeads, statFilter, filterType, filterPlan, filterExpiry, filterStatus, filterCompany, filterCoupon, filterDownload, isLastDownloadInRange, search]);
 
   const totalPages  = Math.max(1, Math.ceil(filtered.length / pageSize));
   const currentPage = Math.min(page, totalPages);
@@ -637,6 +693,7 @@ export default function Leads() {
   const resetFilters = () => {
     setFilterType("all"); setFilterPlan("all"); setFilterExpiry("all");
     setFilterStatus("all"); setFilterCompany("all"); setFilterCoupon("all"); setFilterDateFrom(""); setFilterDateTo("");
+    setFilterDownload("all"); setFilterDownloadFrom(""); setFilterDownloadTo("");
     setSearch(""); setStatFilter("all"); setPage(1);
   };
 
@@ -748,8 +805,8 @@ export default function Leads() {
   };
 
   const hasActiveFilters = filterType !== "all" || filterPlan !== "all" || filterExpiry !== "all" ||
-    filterStatus !== "all" || filterCompany !== "all" || filterCoupon !== "all" ||
-    filterDateFrom || filterDateTo || search || statFilter !== "all";
+    filterStatus !== "all" || filterCompany !== "all" || filterCoupon !== "all" || filterDownload !== "all" ||
+    filterDateFrom || filterDateTo || filterDownloadFrom || filterDownloadTo || search || statFilter !== "all";
 
   const pageEligibleCount = pageSlice.filter(isAssignable).length;
   const allPageEligibleSelected = pageEligibleCount > 0 && pageSlice.filter(isAssignable).every(l => selectedUserIds.has(l._userId));
@@ -931,6 +988,67 @@ export default function Leads() {
         </div>
       </div>
 
+      {/* Last Download Date Range */}
+      <div className="bg-white rounded-2xl border border-emerald-100 p-4 shadow-sm">
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col lg:flex-row lg:items-end gap-3">
+            <div className="flex items-center gap-2 text-sm font-bold text-emerald-700 whitespace-nowrap lg:pb-2">
+              <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clipRule="evenodd" /></svg>
+              Last Download Range
+            </div>
+            <div className="flex flex-wrap items-end gap-3 flex-1">
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Download From</label>
+                <input type="date" value={filterDownloadFrom} onChange={e => { setFilterDownloadFrom(e.target.value); setFilterDownload("downloaded"); setPage(1); }}
+                  className="text-sm border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Download To</label>
+                <input type="date" value={filterDownloadTo} onChange={e => { setFilterDownloadTo(e.target.value); setFilterDownload("downloaded"); setPage(1); }}
+                  className="text-sm border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+              </div>
+              <button onClick={() => {
+                  const now = new Date();
+                  setFilterDownloadFrom(dateInputValue(new Date(now.getFullYear(), now.getMonth(), 1)));
+                  setFilterDownloadTo(dateInputValue(now));
+                  setFilterDownload("downloaded");
+                  setPage(1);
+                }}
+                className="self-end px-3 py-1.5 text-xs font-semibold text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-50 transition-colors">
+                This Month
+              </button>
+              {(filterDownload !== "all" || filterDownloadFrom || filterDownloadTo) && (
+                <button onClick={() => { setFilterDownload("all"); setFilterDownloadFrom(""); setFilterDownloadTo(""); setPage(1); }}
+                  className="self-end px-3 py-1.5 text-xs font-semibold text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+                  Clear download filter
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <button onClick={() => { setFilterDownload(p => p === "downloaded" ? "all" : "downloaded"); setPage(1); }}
+              className={`rounded-xl border px-3 py-2.5 text-left transition-colors ${filterDownload === "downloaded" ? "bg-emerald-50 border-emerald-300" : "border-gray-100 hover:bg-emerald-50/50"}`}>
+              <p className="text-xl font-bold text-emerald-700">{downloadStats.downloaded}</p>
+              <p className="text-xs font-semibold text-gray-600">Last Downloaded</p>
+              <p className="text-[10px] text-gray-400">{downloadRange.hasCustomRange ? "In selected date range" : "This month"}</p>
+            </button>
+            <button onClick={() => { setFilterDownload(p => p === "notDownloaded" ? "all" : "notDownloaded"); setPage(1); }}
+              className={`rounded-xl border px-3 py-2.5 text-left transition-colors ${filterDownload === "notDownloaded" ? "bg-amber-50 border-amber-300" : "border-gray-100 hover:bg-amber-50/50"}`}>
+              <p className="text-xl font-bold text-amber-700">{downloadStats.notDownloaded}</p>
+              <p className="text-xs font-semibold text-gray-600">Not Downloaded</p>
+              <p className="text-[10px] text-gray-400">Last download not in {downloadRange.hasCustomRange ? "selected range" : "this month"}</p>
+            </button>
+            <button onClick={() => { setFilterDownload(p => p === "never" ? "all" : "never"); setPage(1); }}
+              className={`rounded-xl border px-3 py-2.5 text-left transition-colors ${filterDownload === "never" ? "bg-gray-100 border-gray-300" : "border-gray-100 hover:bg-gray-50"}`}>
+              <p className="text-xl font-bold text-gray-700">{downloadStats.never}</p>
+              <p className="text-xs font-semibold text-gray-600">Never Downloaded</p>
+              <p className="text-[10px] text-gray-400">No last download recorded</p>
+            </button>
+          </div>
+        </div>
+      </div>
+
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <StatCard label="Total Users"  value={stats.total}       color="violet" active={statFilter === "all"}        onClick={() => { setStatFilter("all"); setPage(1); }} />
@@ -1018,6 +1136,17 @@ export default function Leads() {
               <option value="all">All Coupons</option>
               <option value="none">No Coupon</option>
               {couponOptions.map(code => <option key={code} value={code}>{code}</option>)}
+            </select>
+          </div>
+          {/* Last Download activity filter */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Last Download</label>
+            <select value={filterDownload} onChange={e => { setFilterDownload(e.target.value); setPage(1); }}
+              className="text-sm border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-400">
+              <option value="all">All Users</option>
+              <option value="downloaded">Downloaded in Range</option>
+              <option value="notDownloaded">Not Downloaded in Range</option>
+              <option value="never">Never Downloaded</option>
             </select>
           </div>
         </div>

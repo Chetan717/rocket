@@ -42,3 +42,18 @@ test("authenticated download fallback updates only the matching existing user", 
   assert.match(callable, /lastDownloadAt:\s*FieldValue\.serverTimestamp\(\)/);
   assert.doesNotMatch(callable, /\.add\(/);
 });
+
+test("User Leads has production-safe date-wise last download counts and filters", () => {
+  const leads = read("src/Pages/Leads/Leads.jsx");
+
+  assert.match(leads, /filterDownloadFrom/);
+  assert.match(leads, /filterDownloadTo/);
+  assert.match(leads, /Downloaded in Range/);
+  assert.match(leads, /Not Downloaded in Range/);
+  assert.match(leads, /Never Downloaded/);
+  assert.match(leads, /This Month/);
+  assert.match(leads, /toDownloadDate\(lead\.lastDownloadAt\)/);
+
+  // Keep the feature client-side over the already-loaded USERS.lastDownloadAt field.
+  assert.doesNotMatch(leads, /collection\(db,\s*["'](?:downloads|downloadActivity|userDownloads)["']/i);
+});

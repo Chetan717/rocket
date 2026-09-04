@@ -22,6 +22,8 @@ function IconCopy({ className = "w-4 h-4" }) {
 import { selectCls, FieldLabel } from "../GraphicsLinkRow";
 
 // ── constants ─────────────────────────────────────────────────────────────────
+const ALL_COMPANIES_TARGET = "__ALL_COMPANIES__";
+
 const COPY_SELECT_TYPES = [
   { name: "Rank Promotion",    value: "Rank_Promotion"    },
   { name: "Thank You Banner B", value: "ThankYou_Banner_B" },
@@ -48,7 +50,11 @@ export default function CopyRankPromotion() {
 
   // selection state
   const [checkedSubtypes, setCheckedSubtypes] = useState(new Set());
-  const [targetCompany,   setTargetCompany]   = useState("");
+  const [targetCompany,   setTargetCompany]   = useState(() =>
+    new URLSearchParams(window.location.search).get("target") === "all"
+      ? ALL_COMPANIES_TARGET
+      : "",
+  );
 
   // copy state
   const [copying,      setCopying]      = useState(false);
@@ -128,6 +134,8 @@ export default function CopyRankPromotion() {
     [companies, demoCompany],
   );
 
+  const isAllCompaniesTarget = targetCompany === ALL_COMPANIES_TARGET;
+
   // ── checkbox handlers ────────────────────────────────────────────────────────
   const toggleSubtype = useCallback((key) => {
     setCheckedSubtypes((prev) => {
@@ -156,6 +164,81 @@ export default function CopyRankPromotion() {
     let skippedDuplicate = 0;
     const errors = [];
 
+    // Collect all templates for the subtypes being copied once.
+    const toBeCopied = [];
+    subtypesToCopy.forEach((sub) => {
+      (subtypeMap[sub] || []).forEach((t) => toBeCopied.push(t));
+    });
+
+    if (isAllCompaniesTarget) {
+      try {
+        // One fresh read for this SelectType, then group duplicate keys by company.
+        // This keeps the bulk action fresh without running one Firestore query per company.
+        const freshSnap = await getDocs(
+          query(
+            collection(db, COLLECTIONS.MLMTEMPLATE),
+            where("SelectType", "==", selectedSelectType),
+          ),
+        );
+
+        const existingKeysByCompany = new Map();
+        freshSnap.docs.forEach((d) => {
+          const data = d.data();
+          const companyId = data.Company;
+          if (!companyId) return;
+          if (!existingKeysByCompany.has(companyId)) {
+            existingKeysByCompany.set(companyId, new Set());
+          }
+          existingKeysByCompany.get(companyId).add(
+            `${(data.Subtype || "").trim()}__${data.serial ?? ""}`,
+          );
+        });
+
+        for (const company of targetCompanies) {
+          const existingKeys = existingKeysByCompany.get(company.id) || new Set();
+          existingKeysByCompany.set(company.id, existingKeys);
+
+          for (const t of toBeCopied) {
+            const finalSubtype = (t.Subtype || "").trim();
+            const dupKey = `${finalSubtype}__${t.serial ?? ""}`;
+            if (existingKeys.has(dupKey)) {
+              skippedDuplicate++;
+              continue;
+            }
+
+            try {
+              // eslint-disable-next-line no-unused-vars
+              const { id: _id, ...rest } = t;
+              await addDoc(collection(db, COLLECTIONS.MLMTEMPLATE), {
+                ...rest,
+                Subtype: finalSubtype,
+                Company: company.id,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+              existingKeys.add(dupKey);
+              copied++;
+            } catch (err) {
+              console.error("Copy failed for", t.id, "to", company.id, err);
+              errors.push(`${company.id}:${t.id}`);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Bulk pre-copy query failed", err);
+        errors.push("bulk-pre-query-failed");
+      }
+
+      setCopyResult({
+        copied,
+        skipped: skippedDuplicate,
+        errors,
+        companies: targetCompanies.length,
+      });
+      setCopying(false);
+      return;
+    }
+
     try {
       // Fresh query at copy-time so we never rely on stale React state
       const freshSnap = await getDocs(
@@ -172,12 +255,6 @@ export default function CopyRankPromotion() {
           return `${(data.Subtype || "").trim()}__${data.serial ?? ""}`;
         }),
       );
-
-      // Collect all templates for the subtypes being copied
-      const toBeCopied = [];
-      subtypesToCopy.forEach((sub) => {
-        (subtypeMap[sub] || []).forEach((t) => toBeCopied.push(t));
-      });
 
       for (const t of toBeCopied) {
         const originalSubtype = (t.Subtype || "").trim();
@@ -217,13 +294,23 @@ export default function CopyRankPromotion() {
 
     setCopyResult({ copied, skipped: skippedDuplicate, errors });
     setCopying(false);
-  }, [targetCompany, subtypeMap, selectedSelectType]);
+  }, [targetCompany, subtypeMap, selectedSelectType, isAllCompaniesTarget, targetCompanies]);
 
   // entry point for the Copy button — checks for subtype-name clashes in the
   // target company first, and if found, opens a confirmation popup before
   // writing anything
   const handleCopy = useCallback(async () => {
     if (!targetCompany || checkedSubtypes.size === 0) return;
+
+    if (isAllCompaniesTarget) {
+      if (targetCompanies.length === 0) return;
+      const confirmed = window.confirm(
+        `Copy the selected templates to all ${targetCompanies.length} companies? Existing duplicates (same subtype + serial) will be skipped.`,
+      );
+      if (!confirmed) return;
+      await runCopy(checkedSubtypes);
+      return;
+    }
 
     setCopying(true);
     setCopyResult(null);
@@ -258,7 +345,7 @@ export default function CopyRankPromotion() {
     }
 
     await runCopy(checkedSubtypes);
-  }, [targetCompany, checkedSubtypes, selectedSelectType, runCopy]);
+  }, [targetCompany, checkedSubtypes, selectedSelectType, runCopy, isAllCompaniesTarget, targetCompanies.length]);
 
   // admin confirmed: duplicate the clashing subtypes as "<name> Copy"
   const confirmDuplicate = useCallback(async () => {
@@ -288,8 +375,11 @@ export default function CopyRankPromotion() {
   );
 
   const targetName = useMemo(
-    () => companies.find((c) => c.id === targetCompany)?.name || "",
-    [companies, targetCompany],
+    () =>
+      isAllCompaniesTarget
+        ? `all ${targetCompanies.length} companies`
+        : companies.find((c) => c.id === targetCompany)?.name || "",
+    [companies, targetCompany, isAllCompaniesTarget, targetCompanies.length],
   );
 
   // ── render ───────────────────────────────────────────────────────────────────
@@ -351,7 +441,9 @@ export default function CopyRankPromotion() {
               onClick={() => {
                 setSelectedSelectType(t.value);
                 setCheckedSubtypes(new Set());
-                setTargetCompany("");
+                setTargetCompany((current) =>
+                  current === ALL_COMPANIES_TARGET ? ALL_COMPANIES_TARGET : "",
+                );
                 setCopyResult(null);
               }}
               className={`px-4 py-2 rounded-xl text-sm font-semibold border transition-all ${
@@ -493,6 +585,9 @@ export default function CopyRankPromotion() {
                   className={selectCls}
                 >
                   <option value="">Select target company…</option>
+                  <option value={ALL_COMPANIES_TARGET}>
+                    Copy to All Companies ({targetCompanies.length})
+                  </option>
                   {targetCompanies.map((c) => (
                     <option key={c.id} value={c.id}>{c.name}</option>
                   ))}
@@ -501,7 +596,15 @@ export default function CopyRankPromotion() {
               </div>
               {targetCompany && (
                 <p className="text-xs text-gray-400">
-                  Copies will be created under <span className="font-semibold text-violet-500">{targetName}</span>. Duplicates (same subtype + serial) are skipped automatically.
+                  {isAllCompaniesTarget ? (
+                    <>
+                      Copies will be created under <span className="font-semibold text-violet-500">{targetName}</span>, excluding the Demo source company. Existing duplicates (same subtype + serial) are skipped automatically.
+                    </>
+                  ) : (
+                    <>
+                      Copies will be created under <span className="font-semibold text-violet-500">{targetName}</span>. Duplicates (same subtype + serial) are skipped automatically.
+                    </>
+                  )}
                 </p>
               )}
             </div>
@@ -622,7 +725,8 @@ export default function CopyRankPromotion() {
                 disabled={
                   copying ||
                   checkedSubtypes.size === 0 ||
-                  !targetCompany
+                  !targetCompany ||
+                  (isAllCompaniesTarget && targetCompanies.length === 0)
                 }
                 className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors shadow-lg shadow-violet-500/20"
               >
@@ -634,7 +738,9 @@ export default function CopyRankPromotion() {
                 ) : (
                   <>
                     <IconCopy className="w-4 h-4" />
-                    Copy {selectedCount > 0 ? `${selectedCount} Template${selectedCount !== 1 ? "s" : ""}` : "Selected"}
+                    {isAllCompaniesTarget
+                      ? `Copy ${selectedCount > 0 ? `${selectedCount} Template${selectedCount !== 1 ? "s" : ""}` : "Selected"} to All Companies`
+                      : `Copy ${selectedCount > 0 ? `${selectedCount} Template${selectedCount !== 1 ? "s" : ""}` : "Selected"}`}
                   </>
                 )}
               </button>
