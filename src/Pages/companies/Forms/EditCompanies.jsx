@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 import { doc, getDoc, updateDoc, deleteDoc, serverTimestamp } from "firebase/firestore";
-import { db } from "../../../../Firebase";
+import { db, functions } from "../../../../Firebase";
+import { httpsCallable } from "firebase/functions";
 import { useAdminDeleteGuard } from "../../../Utils/AdminDeleteGuard";
 import {
   CirclePlus,
@@ -544,6 +545,8 @@ function DeleteModal({ companyName, onConfirm, onCancel, loading }) {
 
 export default function EditCompanies() {
   const { id }   = useParams();
+  const [searchParams] = useSearchParams();
+  const deleteRequestId = searchParams.get("deleteRequest") || "";
   const navigate = useNavigate();
   const [form,          setForm]          = useState(null);
   const [fetchLoading,  setFetchLoading]  = useState(true);
@@ -615,11 +618,15 @@ export default function EditCompanies() {
   const handleDelete = useCallback(() => {
     requestDelete(async () => {
       setDeleteLoading(true);
-      try { await deleteDoc(doc(db, "mlmcomp", id)); navigate("/companies"); }
+      try {
+        if (deleteRequestId) await httpsCallable(functions, "panelFinalizeApprovedDelete")({ requestId: deleteRequestId });
+        else await deleteDoc(doc(db, "mlmcomp", id));
+        navigate("/companies");
+      }
       catch (err) { console.error(err); setError("Delete failed."); setShowDelete(false); }
       finally { setDeleteLoading(false); }
-    });
-  }, [id, navigate, requestDelete]);
+    }, () => setShowDelete(false), { resourceType: "company", resourceId: id, resourceLabel: form?.name || id, returnUrl: `/companies/edit/${id}` });
+  }, [id, navigate, requestDelete, deleteRequestId, form?.name]);
 
   if (fetchLoading) return (
     <div className="p-4 md:p-6 max-w-2xl mx-auto space-y-4">
@@ -637,6 +644,11 @@ export default function EditCompanies() {
 
   return (
     <>
+      {deleteRequestId && (
+        <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          <b>Delete request approved.</b> Master Admin final delete ke liye niche <b>Delete Company</b> use karein.
+        </div>
+      )}
       {showDelete && <DeleteModal companyName={form?.name || "this company"} onConfirm={handleDelete} onCancel={() => setShowDelete(false)} loading={deleteLoading} />}
       {DeleteAuthModal}
       {BlockedToast}

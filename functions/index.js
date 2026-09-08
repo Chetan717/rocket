@@ -15,6 +15,7 @@ const {
   MASKED_ADMIN_OTP_RECIPIENT,
   buildAdminOtpMessage,
 } = require("./adminEmailOtp");
+const { buildTaskEmailMessage } = require("./taskEmail");
 const {
   getRemovedTemplateStoragePaths,
   getUnreferencedTemplateStoragePaths,
@@ -188,6 +189,48 @@ async function sendEmailOtp(otp) {
     throw new HttpsError("unavailable", "Email OTP could not be sent right now.");
   }
 }
+
+function validEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+}
+
+async function taskRecipientsForRole(role) {
+  if (role === "Master Admin") {
+    const master = await db.collection("adminuser").where("role", "==", "Master Admin").where("active", "==", true).limit(5).get();
+    const emails = master.docs.map(document => document.data().email).filter(validEmail);
+    return emails.length ? emails : [ADMIN_OTP_RECIPIENT];
+  }
+  const roles = role === "Developer" ? ["Developer", "Devloper"] : [String(role || "")];
+  const snapshots = await Promise.all(roles.map(roleName => db.collection("adminuser").where("role", "==", roleName).where("active", "==", true).limit(50).get()));
+  return snapshots.flatMap(snapshot => snapshot.docs
+    .filter(document => Array.isArray(document.data().assigntab) && document.data().assigntab.includes("taskmanagement"))
+    .map(document => document.data().email)).filter(validEmail);
+}
+
+async function sendTaskEmail(task, eventType, includeMaster = false) {
+  const sender = String(EMAIL_NODEMAILER.value() || "").trim();
+  const password = EMAIL_PASS.value();
+  if (!validEmail(sender) || !password) {
+    console.error("Task email skipped: mail service is not configured.");
+    return;
+  }
+  const assigned = await taskRecipientsForRole(task.assignedRole);
+  let recipients = [...assigned];
+  if (includeMaster) recipients.push(...await taskRecipientsForRole("Master Admin"));
+  recipients = [...new Set(recipients)];
+  const message = buildTaskEmailMessage({ sender, recipients, task, eventType });
+  if (!message) {
+    console.warn("Task email skipped: assigned Admin role has no notification email.", { role: task.assignedRole || "" });
+    return;
+  }
+  const transporter = nodemailer.createTransport({
+    host: "smtp.gmail.com", port: 465, secure: true,
+    auth: { user: sender, pass: password },
+    connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 15000,
+  });
+  await transporter.sendMail(message);
+}
+
 async function createEmailChallenge(ownerId) {
   const otp = crypto.randomInt(100000, 1000000).toString();
   const salt = crypto.randomBytes(16).toString("hex");
@@ -827,6 +870,148 @@ exports.panelDeleteMarketingCoupon = onCall({ region: REGION, cors: true }, asyn
   await db.collection("_panelAudit").add({ panel: "admin", action: "marketing_coupon_deleted", targetId: couponId, actorUid: request.auth.uid, createdAt: FieldValue.serverTimestamp() });
   return { ok: true };
 });
+
+
+
+const DELETE_REQUEST_COLLECTION = "_adminDeleteRequests";
+const DELETE_TARGETS = Object.freeze({
+  template: { collection: "mlmtemplate", routePrefix: "/templates/edit/" },
+  company: { collection: "mlmcomp", routePrefix: "/companies/edit/" },
+});
+
+function deleteTargetFor(resourceType) {
+  return DELETE_TARGETS[String(resourceType || "").trim().toLowerCase()] || null;
+}
+
+function safeDeleteReturnUrl(value, resourceType, resourceId) {
+  const target = deleteTargetFor(resourceType);
+  const fallback = `${target.routePrefix}${resourceId}`;
+  const raw = String(value || fallback).trim();
+  if (!raw.startsWith(target.routePrefix) || raw.includes("://") || raw.includes("\\")) return fallback;
+  return raw.slice(0, 300);
+}
+
+exports.panelCreateDeleteRequest = onCall({ region: REGION, cors: true }, async request => {
+  const { data: session } = await requireSession(request);
+  if (request.auth?.token?.actorType === "owner" && request.auth?.token?.role === "Master Admin") {
+    throw new HttpsError("failed-precondition", "Master Admin can delete directly without approval.");
+  }
+  const resourceType = String(request.data?.resourceType || "").trim().toLowerCase();
+  const resourceId = String(request.data?.resourceId || "").trim();
+  const target = deleteTargetFor(resourceType);
+  if (!target || !/^[A-Za-z0-9_-]{1,128}$/.test(resourceId)) throw new HttpsError("invalid-argument", "Invalid delete target.");
+
+  const tabs = Array.isArray(request.auth?.token?.tabs) ? request.auth.token.tabs : [];
+  const hasAccess = resourceType === "template"
+    ? tabs.some(tab => ["templates", "templates_operation"].includes(tab))
+    : tabs.includes("companies");
+  if (!hasAccess) throw new HttpsError("permission-denied", "You do not have access to request deletion for this item.");
+
+  const targetDoc = await db.collection(target.collection).doc(resourceId).get();
+  if (!targetDoc.exists) throw new HttpsError("not-found", "Item was not found.");
+
+  const ref = db.collection(DELETE_REQUEST_COLLECTION).doc(hash(`${resourceType}:${resourceId}`));
+  const existing = await ref.get();
+  if (existing.exists && ["pending", "approved"].includes(existing.data().status)) {
+    return { ok: true, requestId: ref.id, duplicate: true };
+  }
+
+  const resourceLabel = cleanText(
+    request.data?.resourceLabel || targetDoc.data()?.name || targetDoc.data()?.Title || targetDoc.data()?.Subtype || resourceId,
+    160,
+  );
+  await ref.set({
+    resourceType,
+    resourceId,
+    resourceLabel,
+    targetCollection: target.collection,
+    returnUrl: safeDeleteReturnUrl(request.data?.returnUrl, resourceType, resourceId),
+    status: "pending",
+    requestedByUid: request.auth.uid,
+    requestedByName: cleanText(request.auth?.token?.name || session.actorName || "Admin", 100),
+    requestedByRole: cleanText(request.auth?.token?.role || "Admin", 60),
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  await db.collection("_panelAudit").add({ panel: "admin", action: "delete_request_created", targetId: resourceId, requestId: ref.id, resourceType, actorUid: request.auth.uid, createdAt: FieldValue.serverTimestamp() });
+  return { ok: true, requestId: ref.id };
+});
+
+exports.panelListDeleteRequests = onCall({ region: REGION, cors: true }, async request => {
+  await requireMasterAdmin(request);
+  const snapshot = await db.collection(DELETE_REQUEST_COLLECTION).orderBy("createdAt", "desc").limit(200).get();
+  return { requests: snapshot.docs.map(document => {
+    const data = document.data();
+    return {
+      id: document.id,
+      resourceType: data.resourceType || "",
+      resourceId: data.resourceId || "",
+      resourceLabel: data.resourceLabel || "",
+      returnUrl: data.returnUrl || "",
+      status: data.status || "pending",
+      requestedByName: data.requestedByName || "",
+      requestedByRole: data.requestedByRole || "",
+      createdAt: data.createdAt?.toMillis?.() || null,
+      reviewedAt: data.reviewedAt?.toMillis?.() || null,
+    };
+  }) };
+});
+
+exports.panelReviewDeleteRequest = onCall({ region: REGION, cors: true }, async request => {
+  await requireMasterAdmin(request);
+  const requestId = String(request.data?.requestId || "").trim();
+  const decision = String(request.data?.decision || "").trim().toLowerCase();
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId) || !["approved", "cancelled"].includes(decision)) throw new HttpsError("invalid-argument", "Invalid review request.");
+  const ref = db.collection(DELETE_REQUEST_COLLECTION).doc(requestId);
+  await db.runTransaction(async transaction => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) throw new HttpsError("not-found", "Delete request was not found.");
+    if (snapshot.data().status !== "pending") throw new HttpsError("failed-precondition", "This request has already been reviewed.");
+    transaction.update(ref, { status: decision, reviewedByUid: request.auth.uid, reviewedByName: request.auth?.token?.name || "Master Admin", reviewedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+  });
+  return { ok: true, status: decision };
+});
+
+exports.panelFinalizeApprovedDelete = onCall({ region: REGION, cors: true }, async request => {
+  await requireMasterAdmin(request);
+  const requestId = String(request.data?.requestId || "").trim();
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) throw new HttpsError("invalid-argument", "Invalid delete request.");
+  const requestRef = db.collection(DELETE_REQUEST_COLLECTION).doc(requestId);
+  await db.runTransaction(async transaction => {
+    const approval = await transaction.get(requestRef);
+    if (!approval.exists) throw new HttpsError("not-found", "Delete request was not found.");
+    const data = approval.data();
+    if (data.status !== "approved") throw new HttpsError("failed-precondition", "Delete request is not approved.");
+    const target = deleteTargetFor(data.resourceType);
+    if (!target || target.collection !== data.targetCollection) throw new HttpsError("failed-precondition", "Delete target is invalid.");
+    const targetRef = db.collection(target.collection).doc(String(data.resourceId || ""));
+    const targetDoc = await transaction.get(targetRef);
+    if (targetDoc.exists) transaction.delete(targetRef);
+    transaction.update(requestRef, { status: "deleted", deletedByUid: request.auth.uid, deletedByName: request.auth?.token?.name || "Master Admin", deletedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+  });
+  await db.collection("_panelAudit").add({ panel: "admin", action: "approved_delete_finalized", requestId, actorUid: request.auth.uid, createdAt: FieldValue.serverTimestamp() });
+  return { ok: true };
+});
+
+exports.taskEmailNotifications = onDocumentWritten(
+  { document: "Taskm/{taskId}", region: REGION, secrets: [EMAIL_PASS] },
+  async event => {
+    const before = event.data?.before?.exists ? event.data.before.data() : null;
+    const after = event.data?.after?.exists ? event.data.after.data() : null;
+    if (!after) return;
+    try {
+      if (!before) {
+        await sendTaskEmail(after, "assigned", false);
+        return;
+      }
+      if (before.status !== "Completed" && after.status === "Completed") {
+        await sendTaskEmail(after, "completed", true);
+      }
+    } catch (error) {
+      console.error("Task email notification failed", { taskId: event.params.taskId, code: error?.code || "unknown" });
+    }
+  },
+);
 
 exports.recordUserDownload = onCall(
   { region: USER_ACTIVITY_REGION, cors: true },

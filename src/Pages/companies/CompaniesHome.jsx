@@ -46,6 +46,7 @@ export default function CompaniesHome() {
 
   const handleDelete = useCallback((id) => {
     if (!window.confirm("Delete this company? This cannot be undone.")) return;
+    const company = companies.find((item) => item.id === id);
     requestDelete(async () => {
       setDeletingId(id);
       try {
@@ -57,8 +58,8 @@ export default function CompaniesHome() {
       } finally {
         setDeletingId(null);
       }
-    });
-  }, [requestDelete]);
+    }, null, { resourceType: "company", resourceId: id, resourceLabel: company?.name || id, returnUrl: `/companies/edit/${id}` });
+  }, [requestDelete, companies]);
 
   // ── Edit navigate ────────────────────────────────────────────────────────
   const handleEdit = useCallback(

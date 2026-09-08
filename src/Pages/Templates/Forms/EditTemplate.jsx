@@ -4,7 +4,8 @@ import {
   collection, doc, getDoc, getDocs, deleteDoc,
   serverTimestamp, writeBatch,
 } from "firebase/firestore";
-import { db } from "../../../../Firebase";
+import { db, functions } from "../../../../Firebase";
+import { httpsCallable } from "firebase/functions";
 import {
   ArrowLeft, TrashBin, TriangleThunderbolt, CircleCheck, ChevronDown, Eye, Folder,
 } from "@gravity-ui/icons";
@@ -189,6 +190,7 @@ export default function EditTemplate() {
   const navigate           = useNavigate();
   const [searchParams]     = useSearchParams();
   const fromIssues         = searchParams.get("from") === "issues";
+  const deleteRequestId    = searchParams.get("deleteRequest") || "";
 
   const [form,          setForm]          = useState(null);
   const [fetchLoading,  setFetchLoading]  = useState(true);
@@ -405,20 +407,23 @@ export default function EditTemplate() {
     setPendingForm(null);
   }, [currentQualityChecks, issueKeys, performSave, pendingFormData]);
 
+  const templateTitle = form ? `#${form.serial || "—"} · ${form.MainType} / ${form.SelectType}` : "Template";
+
   const { requestDelete, DeleteAuthModal, BlockedToast } = useAdminDeleteGuard();
 
   const handleDelete = useCallback(() => {
     requestDelete(async () => {
       setDeleteLoading(true);
       try {
-        await deleteDoc(doc(db, "mlmtemplate", id));
+        if (deleteRequestId) await httpsCallable(functions, "panelFinalizeApprovedDelete")({ requestId: deleteRequestId });
+        else await deleteDoc(doc(db, "mlmtemplate", id));
         navigate("/templates");
       } catch (err) {
         console.error(err);
         setError("Delete failed."); setShowDelete(false);
       } finally { setDeleteLoading(false); }
-    });
-  }, [id, navigate, requestDelete]);
+    }, () => setShowDelete(false), { resourceType: "template", resourceId: id, resourceLabel: templateTitle, returnUrl: `/templates/edit/${id}` });
+  }, [id, navigate, requestDelete, deleteRequestId, templateTitle]);
 
   if (fetchLoading) return (
     <div className="p-4 md:p-6 max-w-2xl mx-auto space-y-4">
@@ -434,10 +439,14 @@ export default function EditTemplate() {
     </div>
   );
 
-  const templateTitle = form ? `#${form.serial || "—"} · ${form.MainType} / ${form.SelectType}` : "Template";
 
   return (
     <>
+      {deleteRequestId && (
+        <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          <b>Delete request approved.</b> Master Admin final delete ke liye niche <b>Delete Template</b> use karein.
+        </div>
+      )}
       {showDelete && <DeleteModal title={templateTitle} onConfirm={handleDelete} onCancel={() => setShowDelete(false)} loading={deleteLoading} />}
       {showQCModal && (
         <QualityStatusModal

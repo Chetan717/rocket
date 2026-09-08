@@ -31,6 +31,7 @@ const EMPTY_FORM = {
   name: "",
   role: "Admin",
   mobile: "",
+  email: "",
   assigntab: [],
   active: true,
 };
@@ -49,6 +50,7 @@ function validate(form) {
   const e = {};
   if (!form.name.trim())              e.name   = "Name is required";
   if (!/^\d{10}$/.test(form.mobile))  e.mobile = "Must be 10 digits";
+  if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) e.email = "Enter a valid email";
   if (!ROLES.includes(form.role))     e.role   = "Select one of the supported admin roles";
   return e;
 }
@@ -194,6 +196,19 @@ function AdminModal({ mode, initial, onSave, onClose, saving }) {
             {errors.mobile && <p className="text-red-500 text-xs mt-1">{errors.mobile}</p>}
           </div>
 
+          <div>
+            <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1 block">Email for Task Notifications</label>
+            <input
+              type="email"
+              value={form.email || ""}
+              onChange={e => set("email", e.target.value)}
+              placeholder="user@example.com"
+              className={`w-full border rounded-xl px-3 py-2.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-violet-400 ${errors.email ? "border-red-400" : "border-gray-200"}`}
+            />
+            {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email}</p>}
+            <p className="text-[11px] text-gray-400 mt-1">Task assigned/completed email notifications are sent here.</p>
+          </div>
+
           {/* Assign Tabs */}
           <TabSelector
             selected={form.assigntab}
@@ -284,6 +299,7 @@ export default function AdminManagement() {
     return admins.filter(a =>
       a.name?.toLowerCase().includes(q) ||
       a.mobile?.includes(q) ||
+      a.email?.toLowerCase().includes(q) ||
       a.role?.toLowerCase().includes(q)
     );
   }, [admins, search]);
@@ -296,6 +312,7 @@ export default function AdminManagement() {
           name:      form.name.trim(),
           role:      form.role,
           mobile:    form.mobile,
+          email:     form.email.trim().toLowerCase(),
           ownerAdminId: me.ownerAdminId || me.id,
           assigntab: form.assigntab,
           active:    form.active,
@@ -309,6 +326,7 @@ export default function AdminManagement() {
           name:      form.name.trim(),
           role:      form.role,
           mobile:    form.mobile,
+          email:     form.email.trim().toLowerCase(),
           assigntab: form.assigntab,
           active:    form.active,
           updatedAt: serverTimestamp(),
@@ -392,7 +410,7 @@ export default function AdminManagement() {
       <div className="relative">
         <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"><IconSearch /></span>
         <input
-          type="text" placeholder="Search by name, mobile, role…"
+          type="text" placeholder="Search by name, mobile, email, role…"
           value={search} onChange={e => setSearch(e.target.value)}
           className="w-full pl-9 pr-4 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-400"
         />
@@ -410,7 +428,7 @@ export default function AdminManagement() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-100">
-                  {["#", "Name", "Role", "Mobile", "Assigned Tabs", "Status", "Actions"].map(h => (
+                  {["#", "Name", "Role", "Mobile", "Email", "Assigned Tabs", "Status", "Actions"].map(h => (
                     <th key={h} className="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -418,7 +436,7 @@ export default function AdminManagement() {
               <tbody className="divide-y divide-gray-50">
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-16 text-center text-gray-400 text-sm">
+                    <td colSpan={8} className="py-16 text-center text-gray-400 text-sm">
                       {search ? `No results for "${search}".` : "No admin users yet. Click Add Admin User to create one."}
                     </td>
                   </tr>
@@ -438,6 +456,7 @@ export default function AdminManagement() {
                     </td>
                     <td className="px-4 py-3"><RoleBadge role={admin.role} /></td>
                     <td className="px-4 py-3 font-mono text-xs text-gray-600">{admin.mobile}</td>
+                    <td className="px-4 py-3 text-xs text-gray-600">{admin.email || <span className="text-amber-500">Not set</span>}</td>
                     <td className="px-4 py-3">
                       {admin.role === "Master Admin" ? (
                         <span className="text-xs text-violet-600 font-semibold">All tabs</span>

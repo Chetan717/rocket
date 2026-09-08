@@ -205,6 +205,23 @@ export default function QualityCheck({ template, onClose }) {
     setSaved(false);
   }, []);
 
+  const handleSelectAllOk = useCallback(() => {
+    setChecks((prev) => {
+      const next = { ...prev };
+      links.forEach((link, index) => {
+        const stableKey = getGraphicsStableKey(link, index);
+        next[stableKey] = {
+          note: "",
+          ...(prev[stableKey] || {}),
+          flag: "ok",
+        };
+      });
+      return next;
+    });
+    setSubtypeChecked(true);
+    setSaved(false);
+  }, [links]);
+
   const handleSave = useCallback(async () => {
     if (!templateId) return;
     setSaving(true);
@@ -349,7 +366,17 @@ export default function QualityCheck({ template, onClose }) {
           )}
 
           {!loading && links.length > 0 && (
-            <SummaryBar checks={checks} links={links} />
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <SummaryBar checks={checks} links={links} />
+              <button
+                type="button"
+                onClick={handleSelectAllOk}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors shadow-sm"
+              >
+                <span className="w-4 h-4 rounded-full bg-white/20 flex items-center justify-center">✓</span>
+                One Click: All Graphics OK
+              </button>
+            </div>
           )}
 
           {error && (

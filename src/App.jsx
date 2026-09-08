@@ -22,6 +22,7 @@ import TemplateData from "./Pages/Templates/TemplateData";
 import SecuritySessions from "./Pages/SecuritySessions";
 import TaskManagement from "./Pages/TaskManagement/TaskManagement";
 import Notifications from "./Pages/Notifications/Notifications";
+import DeleteRequests from "./Pages/DeleteRequests";
 
 function App() {
   return (
@@ -69,6 +70,7 @@ function App() {
       {/* Marketing-to-Admin Tasks */}
       <Route path="/taskmanagement" element={<ProtectedRoute><Layout><TaskManagement /></Layout></ProtectedRoute>} />
       <Route path="/notifications" element={<ProtectedRoute><Layout><Notifications /></Layout></ProtectedRoute>} />
+      <Route path="/delete-requests" element={<ProtectedRoute><Layout><DeleteRequests /></Layout></ProtectedRoute>} />
 
       {/* ── Auth routes ── */}
       <Route path="/login"    element={<Login />} />
