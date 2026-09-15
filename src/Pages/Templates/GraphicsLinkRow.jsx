@@ -293,6 +293,16 @@ export function GraphicsLinkRow({
                       placeholder="Paste URL or click ↑ to upload profile mute this week income image"
                     />
                   </div>
+
+                  <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-emerald-50/50 dark:bg-emerald-500/5 border border-emerald-100 dark:border-emerald-500/20">
+                    <FieldLabel>Trip batch Image</FieldLabel>
+                    <ImageUploadInput
+                      value={item.trip_batch_image || ""}
+                      onChange={(v) => update("trip_batch_image", v)}
+                      storagePath="templates/trip-batch-image"
+                      placeholder="Paste URL or click ↑ to upload trip batch image"
+                    />
+                  </div>
                 </>
               )}
 

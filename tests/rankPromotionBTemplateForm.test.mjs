@@ -46,10 +46,11 @@ test("Rank Promotion B and C use the same Add/Edit graphics configuration as Ran
   );
 });
 
-test("rank promotion graphics links persist both profile mute image fields", () => {
+test("rank promotion graphics links persist profile mute and trip batch image fields", () => {
   const graphicsLink = emptyGraphicsLink();
   assert.equal(graphicsLink.mute_footer, "");
   assert.equal(graphicsLink.mute_income, "");
+  assert.equal(graphicsLink.trip_batch_image, "");
 
   assert.match(
     graphicsRowsSource,
@@ -62,6 +63,9 @@ test("rank promotion graphics links persist both profile mute image fields", () 
   assert.match(graphicsRowsSource, /Profile Mute This Week Income Image/);
   assert.match(graphicsRowsSource, /update\("mute_income", v\)/);
   assert.match(graphicsRowsSource, /templates\/profile-mute-income/);
+  assert.match(graphicsRowsSource, /Trip batch Image/);
+  assert.match(graphicsRowsSource, /update\("trip_batch_image", v\)/);
+  assert.match(graphicsRowsSource, /templates\/trip-batch-image/);
 
   const badgeField = graphicsRowsSource.indexOf(
     "<FieldLabel>{bannerLabel}</FieldLabel>",
@@ -70,6 +74,8 @@ test("rank promotion graphics links persist both profile mute image fields", () 
   const incomeField = graphicsRowsSource.indexOf(
     "Profile Mute This Week Income Image",
   );
+  const tripBatchField = graphicsRowsSource.indexOf("Trip batch Image");
   assert.ok(badgeField >= 0 && badgeField < footerField);
   assert.ok(footerField < incomeField);
+  assert.ok(incomeField < tripBatchField);
 });

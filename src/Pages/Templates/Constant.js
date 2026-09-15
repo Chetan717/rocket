@@ -77,6 +77,7 @@ export const emptyGraphicsLink = () => ({
   bannerId: "",
   mute_footer: "", // Rank Promotion variants only — profile mute footer image
   mute_income: "", // Rank Promotion variants only — profile mute this-week income image
+  trip_batch_image: "", // Rank Promotion variants only — trip batch image
   position: "left",
   incmNameId: "",
   Filter: "true",
