@@ -303,6 +303,16 @@ export function GraphicsLinkRow({
                       placeholder="Paste URL or click ↑ to upload trip batch image"
                     />
                   </div>
+
+                  <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-emerald-50/50 dark:bg-emerald-500/5 border border-emerald-100 dark:border-emerald-500/20">
+                    <FieldLabel>Trip Detail Image</FieldLabel>
+                    <ImageUploadInput
+                      value={item.trip_detail_image || ""}
+                      onChange={(v) => update("trip_detail_image", v)}
+                      storagePath="templates/trip-detail-image"
+                      placeholder="Paste URL or click ↑ to upload trip detail image"
+                    />
+                  </div>
                 </>
               )}
 

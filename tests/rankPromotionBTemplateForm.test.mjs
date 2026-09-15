@@ -46,11 +46,12 @@ test("Rank Promotion B and C use the same Add/Edit graphics configuration as Ran
   );
 });
 
-test("rank promotion graphics links persist profile mute and trip batch image fields", () => {
+test("rank promotion graphics links persist profile mute, trip batch, and trip detail image fields", () => {
   const graphicsLink = emptyGraphicsLink();
   assert.equal(graphicsLink.mute_footer, "");
   assert.equal(graphicsLink.mute_income, "");
   assert.equal(graphicsLink.trip_batch_image, "");
+  assert.equal(graphicsLink.trip_detail_image, "");
 
   assert.match(
     graphicsRowsSource,
@@ -66,6 +67,9 @@ test("rank promotion graphics links persist profile mute and trip batch image fi
   assert.match(graphicsRowsSource, /Trip batch Image/);
   assert.match(graphicsRowsSource, /update\("trip_batch_image", v\)/);
   assert.match(graphicsRowsSource, /templates\/trip-batch-image/);
+  assert.match(graphicsRowsSource, /Trip Detail Image/);
+  assert.match(graphicsRowsSource, /update\("trip_detail_image", v\)/);
+  assert.match(graphicsRowsSource, /templates\/trip-detail-image/);
 
   const badgeField = graphicsRowsSource.indexOf(
     "<FieldLabel>{bannerLabel}</FieldLabel>",
@@ -75,7 +79,9 @@ test("rank promotion graphics links persist profile mute and trip batch image fi
     "Profile Mute This Week Income Image",
   );
   const tripBatchField = graphicsRowsSource.indexOf("Trip batch Image");
+  const tripDetailField = graphicsRowsSource.indexOf("Trip Detail Image");
   assert.ok(badgeField >= 0 && badgeField < footerField);
   assert.ok(footerField < incomeField);
   assert.ok(incomeField < tripBatchField);
+  assert.ok(tripBatchField < tripDetailField);
 });
