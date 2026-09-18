@@ -28,6 +28,7 @@ export const GENERAL_SELECT_TYPES = [
   { name: "Health Tips", value: "Health_Tips" },
 
   { name: "Bonanza", value: "Bonanza" },
+  { name: "Domestic Trip", value: "Domestic_Trip" },
   { name: "Achievements", value: "Achievements" },
   { name: "Achievements B", value: "Achievements_B" },
   { name: "Income", value: "Income" },
