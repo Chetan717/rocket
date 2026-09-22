@@ -3,7 +3,7 @@
 This release adds Admin-managed Marketing hierarchy/percentages/coupons, secure Marketing login-email migration fields, and multi-delete/Clear All for recent app notification history.
 
 Read `MARKETING_EMAIL_HIERARCHY_DEPLOY.md` before production deployment. It contains the required Admin-first data migration and Marketing email-OTP cutover order. Never deploy a Gmail App Password in source or a frontend environment variable.
-
+n
 ## Frontend
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
