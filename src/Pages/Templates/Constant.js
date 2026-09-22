@@ -80,6 +80,7 @@ export const emptyGraphicsLink = () => ({
   mute_income: "", // Rank Promotion variants only — profile mute this-week income image
   trip_batch_image: "", // Rank Promotion variants only — trip batch image
   trip_detail_image: "", // Rank Promotion variants only — trip detail image
+  meeting_badge_image: "", // Meeting / General Meeting only — meeting badge image
   position: "left",
   incmNameId: "",
   Filter: "true",

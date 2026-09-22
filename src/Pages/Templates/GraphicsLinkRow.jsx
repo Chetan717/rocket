@@ -51,6 +51,7 @@ const showPosition = (t) => ![""].includes(t);
 
 // Filter options change for Meeting
 const isMeeting = (t) => t === "Meeting";
+const isMeetingType = (t) => t === "Meeting" || t === "General_Meeting";
 
 // ── Small preview tile ────────────────────────────────────────────────────────
 function PreviewTile({ src, label }) {
@@ -99,6 +100,7 @@ export function GraphicsLinkRow({
   const canShowNameImage = isAchievement(selType) || isIncome(selType);
   const canShowRankNameImage = isRankPromotionType(selType);
   const canShowProfileMuteImages = isRankPromotionType(selType);
+  const canShowMeetingBadgeImage = isMeetingType(selType);
   const canShowBannerId = showBannerId(selType);
   const canShowPosition = showPosition(selType);
   const filterOptions = getFilterOptions(selType);
@@ -267,6 +269,19 @@ export function GraphicsLinkRow({
                     onChange={(v) => update("bannerId", v)}
                     storagePath="templates/badges"
                     placeholder="Paste URL or click ↑ to upload"
+                  />
+                </div>
+              )}
+
+              {/* Meeting badge image — ONLY Meeting / General Meeting */}
+              {canShowMeetingBadgeImage && (
+                <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-violet-50/50 dark:bg-violet-500/5 border border-violet-100 dark:border-violet-500/20">
+                  <FieldLabel>Meeting Badge Image</FieldLabel>
+                  <ImageUploadInput
+                    value={item.meeting_badge_image || ""}
+                    onChange={(v) => update("meeting_badge_image", v)}
+                    storagePath="templates/meeting-badge-image"
+                    placeholder="Paste URL or click ↑ to upload meeting badge image"
                   />
                 </div>
               )}
