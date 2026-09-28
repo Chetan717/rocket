@@ -10,16 +10,21 @@ import {
 } from "@gravity-ui/icons";
 
 // ── Convert any image file → WebP Blob (canvas-based, no deps) ───────────────
-function convertToWebP(file, quality = 0.85) {
+function convertToWebP(file, quality = 0.85, maxDimension = null) {
   return new Promise((resolve, reject) => {
     const img    = new Image();
     const objUrl = URL.createObjectURL(file);
 
     img.onload = () => {
       const canvas = document.createElement("canvas");
-      canvas.width  = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      canvas.getContext("2d").drawImage(img, 0, 0);
+      const sourceWidth = img.naturalWidth || 1;
+      const sourceHeight = img.naturalHeight || 1;
+      const scale = maxDimension
+        ? Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight))
+        : 1;
+      canvas.width  = Math.max(1, Math.round(sourceWidth * scale));
+      canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
       URL.revokeObjectURL(objUrl);
 
       canvas.toBlob(
@@ -88,8 +93,16 @@ export default function ImageUploadInput({
       setImgOk(false);
 
       try {
-        // 1 — Convert to WebP
-        const webpBlob = await convertToWebP(file);
+        // 1 — Convert to WebP. Home/showcase previews do not need source-size
+        // pixels; editor graphics are intentionally left untouched.
+        const isPublicPreview =
+          storagePath === "templates/showcase" ||
+          storagePath === "templates/showcase-form";
+        const webpBlob = await convertToWebP(
+          file,
+          isPublicPreview ? 0.8 : 0.85,
+          isPublicPreview ? 1600 : null,
+        );
 
         // 2 — Upload with progress tracking
         const storageRef  = ref(storage, `${storagePath}/${genName()}`);
