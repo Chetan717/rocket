@@ -9,7 +9,7 @@ import { COLLECTIONS } from "../../collections";
 import { useAdminDeleteGuard } from "../../Utils/AdminDeleteGuard";
 import { getAdminSession } from "../../Utils/adminSession";
 import { TASK_ROLE_OPTIONS } from "../../Utils/taskManagement";
-import PasswordChangeModal from "../../Components/PasswordChangeModal";
+import PasswordChangeModal from "../../components/PasswordChangeModal";
 
 // ── Tab options (must match Sidebar NAV_ITEMS ids) ─────────────────────────
 const ALL_TABS = [

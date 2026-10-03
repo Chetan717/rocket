@@ -3,7 +3,7 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../../../Firebase";
 import { useAdminDeleteGuard } from "../../Utils/AdminDeleteGuard";
 import { getAdminSession } from "../../Utils/adminSession";
-import PasswordChangeModal from "../../Components/PasswordChangeModal";
+import PasswordChangeModal from "../../components/PasswordChangeModal";
 
 const EMPTY_FORM = {
   name: "",
