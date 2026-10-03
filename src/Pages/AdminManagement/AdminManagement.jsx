@@ -3,11 +3,13 @@ import {
   collection, getDocs, addDoc, updateDoc, deleteDoc,
   doc, serverTimestamp, query, orderBy,
 } from "firebase/firestore";
-import { db } from "../../../Firebase";
+import { httpsCallable } from "firebase/functions";
+import { db, functions } from "../../../Firebase";
 import { COLLECTIONS } from "../../collections";
 import { useAdminDeleteGuard } from "../../Utils/AdminDeleteGuard";
 import { getAdminSession } from "../../Utils/adminSession";
 import { TASK_ROLE_OPTIONS } from "../../Utils/taskManagement";
+import PasswordChangeModal from "../../Components/PasswordChangeModal";
 
 // ── Tab options (must match Sidebar NAV_ITEMS ids) ─────────────────────────
 const ALL_TABS = [
@@ -272,6 +274,10 @@ export default function AdminManagement() {
   const [saving,  setSaving]  = useState(false);
   const [search,  setSearch]  = useState("");
   const [deleting,setDeleting]= useState(null);
+  const [passwordTarget, setPasswordTarget] = useState(null);
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [passwordError, setPasswordError] = useState("");
+  const [sessionPasswords, setSessionPasswords] = useState({});
 
   const me = useMemo(() => {
     return getAdminSession() || {};
@@ -365,6 +371,25 @@ export default function AdminManagement() {
     });
   }, [me.id, requestDelete]);
 
+  const saveMasterPassword = useCallback(async (password) => {
+    setPasswordSaving(true);
+    setPasswordError("");
+    try {
+      const target = passwordTarget;
+      await httpsCallable(functions, "panelSetMasterAdminPassword")({ password });
+      if (target?.id) setSessionPasswords(previous => ({ ...previous, [target.id]: password }));
+      setPasswordTarget(null);
+      window.alert("Master Admin password changed successfully. The new password is visible in Admin Management until this page is refreshed. Other Master Admin sessions were signed out.");
+    } catch (err) {
+      setPasswordError(String(err?.message || "Password could not be changed.")
+        .replace(/^Firebase(?:Error)?:?\s*/i, "")
+        .replace(/functions\/[a-z-]+\)?\.?/gi, "")
+        .trim());
+    } finally {
+      setPasswordSaving(false);
+    }
+  }, [passwordTarget]);
+
   const toggleActive = useCallback(async (admin) => {
     const next = !admin.active;
     setAdmins(prev => prev.map(a => a.id === admin.id ? { ...a, active: next } : a));
@@ -428,7 +453,7 @@ export default function AdminManagement() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-100">
-                  {["#", "Name", "Role", "Mobile", "Email", "Assigned Tabs", "Status", "Actions"].map(h => (
+                  {["#", "Name", "Role", "Mobile", "Email", "Password", "Assigned Tabs", "Status", "Actions"].map(h => (
                     <th key={h} className="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -436,7 +461,7 @@ export default function AdminManagement() {
               <tbody className="divide-y divide-gray-50">
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-16 text-center text-gray-400 text-sm">
+                    <td colSpan={9} className="py-16 text-center text-gray-400 text-sm">
                       {search ? `No results for "${search}".` : "No admin users yet. Click Add Admin User to create one."}
                     </td>
                   </tr>
@@ -457,6 +482,18 @@ export default function AdminManagement() {
                     <td className="px-4 py-3"><RoleBadge role={admin.role} /></td>
                     <td className="px-4 py-3 font-mono text-xs text-gray-600">{admin.mobile}</td>
                     <td className="px-4 py-3 text-xs text-gray-600">{admin.email || <span className="text-amber-500">Not set</span>}</td>
+                    <td className="px-4 py-3">
+                      {sessionPasswords[admin.id] ? (
+                        <div className="min-w-[150px] rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1.5 dark:border-violet-900 dark:bg-violet-950/30">
+                          <div className="text-[9px] font-bold uppercase tracking-wide text-violet-500">New password · temporary</div>
+                          <div className="select-all font-mono text-sm font-bold text-violet-800 dark:text-violet-200">{sessionPasswords[admin.id]}</div>
+                        </div>
+                      ) : admin.role === "Master Admin" ? (
+                        <span className="text-[11px] text-gray-400">Hidden · set/change to show</span>
+                      ) : (
+                        <span className="text-[11px] text-gray-300">—</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3">
                       {admin.role === "Master Admin" ? (
                         <span className="text-xs text-violet-600 font-semibold">All tabs</span>
@@ -485,6 +522,15 @@ export default function AdminManagement() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1">
+                        {admin.role === "Master Admin" && (
+                          <button
+                            onClick={() => { setPasswordTarget(admin); setPasswordError(""); }}
+                            className="rounded-lg border border-violet-200 px-2.5 py-1.5 text-[11px] font-bold text-violet-600 hover:bg-violet-50 transition-colors"
+                            title="Change Master Admin Password"
+                          >
+                            Change Password
+                          </button>
+                        )}
                         <button
                           onClick={() => setModal({ mode: "edit", data: { ...EMPTY_FORM, ...admin } })}
                           className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-violet-600 hover:bg-violet-50 transition-colors"
@@ -522,6 +568,18 @@ export default function AdminManagement() {
           <li>Assigning multiple template permissions gives access to all assigned features.</li>
         </ul>
       </div>
+
+      {passwordTarget && (
+        <PasswordChangeModal
+          key={passwordTarget.id}
+          title="Change Master Admin Password"
+          subtitle={`${passwordTarget.name} · Secure password reset`}
+          saving={passwordSaving}
+          error={passwordError}
+          onSave={saveMasterPassword}
+          onClose={() => { if (!passwordSaving) { setPasswordTarget(null); setPasswordError(""); } }}
+        />
+      )}
 
       {modal && (
         <AdminModal

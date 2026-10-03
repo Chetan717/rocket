@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../../Firebase";
 import { useAdminDeleteGuard } from "../../Utils/AdminDeleteGuard";
+import { getAdminSession } from "../../Utils/adminSession";
+import PasswordChangeModal from "../../Components/PasswordChangeModal";
 
 const EMPTY_FORM = {
   name: "",
@@ -115,6 +117,12 @@ export default function MarketingTeam() {
   const [editing, setEditing] = useState(undefined);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState(null);
+  const [passwordTarget, setPasswordTarget] = useState(null);
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [passwordError, setPasswordError] = useState("");
+  const [sessionPasswords, setSessionPasswords] = useState({});
+  const me = useMemo(() => getAdminSession() || {}, []);
+  const isMasterAdmin = me.role === "Master Admin" && me.actorType === "owner";
   const { requestDelete, DeleteAuthModal, BlockedToast } = useAdminDeleteGuard();
 
   const load = useCallback(async () => {
@@ -151,6 +159,24 @@ export default function MarketingTeam() {
   }, [ordered, search]);
 
   const saved = async text => { setEditing(undefined); setStatus({ type: "ok", text }); await load(); };
+  const savePassword = async password => {
+    if (!passwordTarget) return;
+    setPasswordSaving(true);
+    setPasswordError("");
+    try {
+      const target = passwordTarget;
+      await httpsCallable(functions, "panelSetMarketingMemberPassword")({ memberId: target.id, password });
+      setSessionPasswords(previous => ({ ...previous, [target.id]: password }));
+      setPasswordTarget(null);
+      setStatus({ type: "ok", text: `Password changed for ${target.name}. It is visible in the Password column until this page is refreshed. Existing Marketing sessions were signed out.` });
+      await load();
+    } catch (error) {
+      setPasswordError(messageOf(error));
+    } finally {
+      setPasswordSaving(false);
+    }
+  };
+
   const remove = member => {
     if (!window.confirm(`Delete ${member.name}? Members with a team or sales history cannot be deleted.`)) return;
     requestDelete(async () => {
@@ -174,7 +200,7 @@ export default function MarketingTeam() {
         <div className="border-b p-4 dark:border-gray-800"><input className={`${inputClass} max-w-md`} value={search} onChange={event => setSearch(event.target.value)} placeholder="Search name, email, mobile, parent or code…" /></div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1050px] text-left text-sm">
-            <thead className="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-gray-800/70"><tr>{["Member", "Login Email", "Mobile", "Parent", "Commission", "Parent Bonus", "Coupon / Refer", "Status", "Actions"].map(title => <th key={title} className="px-4 py-3">{title}</th>)}</tr></thead>
+            <thead className="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-gray-800/70"><tr>{["Member", "Login Email", "Mobile", "Parent", "Commission", "Parent Bonus", "Coupon / Refer", "Password", "Status", "Actions"].map(title => <th key={title} className="px-4 py-3">{title}</th>)}</tr></thead>
             <tbody className="divide-y dark:divide-gray-800">
               {filtered.map(member => <tr key={member.id} className="hover:bg-gray-50/70 dark:hover:bg-gray-800/30">
                 <td className="px-4 py-3"><div style={{ paddingLeft: `${Math.min(Number(member.level || 0), 6) * 14}px` }}><div className="font-bold">{member.level ? "↳ " : ""}{member.name}</div><div className="text-xs text-gray-400">Level {member.level || 0}</div></div></td>
@@ -184,15 +210,36 @@ export default function MarketingTeam() {
                 <td className="px-4 py-3"><span className="rounded-full bg-violet-50 px-2.5 py-1 font-bold text-violet-700 dark:bg-violet-950/30">{member.commissionPercentage}%</span></td>
                 <td className="px-4 py-3">{member.parentMteamId ? `${member.uplineBonusPercentage}%` : "—"}</td>
                 <td className="px-4 py-3"><div className="font-mono text-xs">{member.assign_coupon_id || "Not assigned"}</div><div className="font-mono text-xs text-gray-400">{member.referCode || "No refer code"}</div></td>
+                <td className="px-4 py-3">
+                  <div className="flex min-w-[155px] flex-col items-start gap-1.5">
+                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${member.passwordConfigured ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30" : "bg-amber-50 text-amber-700 dark:bg-amber-950/30"}`}>{member.passwordConfigured ? "Password Set" : "Not Set"}</span>
+                    {sessionPasswords[member.id] && (
+                      <div className="rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1.5 dark:border-violet-900 dark:bg-violet-950/30">
+                        <div className="text-[9px] font-bold uppercase tracking-wide text-violet-500">New password · temporary</div>
+                        <div className="select-all font-mono text-sm font-bold text-violet-800 dark:text-violet-200">{sessionPasswords[member.id]}</div>
+                      </div>
+                    )}
+                    {isMasterAdmin ? <button type="button" onClick={() => { setPasswordTarget(member); setPasswordError(""); }} className="text-xs font-bold text-violet-600 hover:underline">{member.passwordConfigured ? "Change Password" : "Set Password"}</button> : <span className="text-[10px] text-gray-400">Master Admin only</span>}
+                  </div>
+                </td>
                 <td className="px-4 py-3"><span className={`rounded-full px-2.5 py-1 text-xs font-bold ${member.active ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30" : "bg-red-50 text-red-700 dark:bg-red-950/30"}`}>{member.active ? "Active" : "Inactive"}</span></td>
                 <td className="px-4 py-3"><div className="flex gap-2"><button onClick={() => setEditing(member)} className="rounded-lg border px-3 py-1.5 text-indigo-600 dark:border-gray-700">Edit</button><button onClick={() => remove(member)} className="rounded-lg border px-3 py-1.5 text-red-600 dark:border-gray-700">Delete</button></div></td>
               </tr>)}
-              {!loading && filtered.length === 0 && <tr><td colSpan="9" className="px-4 py-14 text-center text-gray-400">No Marketing members found.</td></tr>}
-              {loading && <tr><td colSpan="9" className="px-4 py-14 text-center text-gray-400">Loading hierarchy…</td></tr>}
+              {!loading && filtered.length === 0 && <tr><td colSpan="10" className="px-4 py-14 text-center text-gray-400">No Marketing members found.</td></tr>}
+              {loading && <tr><td colSpan="10" className="px-4 py-14 text-center text-gray-400">Loading hierarchy…</td></tr>}
             </tbody>
           </table>
         </div>
       </div>
+      {passwordTarget && <PasswordChangeModal
+        key={passwordTarget.id}
+        title={`${passwordTarget.passwordConfigured ? "Change" : "Set"} Marketing Password`}
+        subtitle={`${passwordTarget.name} · ${passwordTarget.loginEmail}`}
+        saving={passwordSaving}
+        error={passwordError}
+        onSave={savePassword}
+        onClose={() => { if (!passwordSaving) { setPasswordTarget(null); setPasswordError(""); } }}
+      />}
       {DeleteAuthModal}
       {BlockedToast}
     </div>
