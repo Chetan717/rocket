@@ -264,9 +264,29 @@ async function readTicket(id, ticket) {
   return { ref, data };
 }
 async function passwordHash(password, salt) { return (await scrypt(password, salt, 64)).toString("hex"); }
+function panelCredentialRef(panel, ownerId, actorId) {
+  return db.collection("_panelCredentials").doc(hash(`${panel}:${ownerId}:${actorId}`));
+}
+async function setPanelPassword(panel, ownerId, actorId, password) {
+  if (!strongPassword(password)) throw passwordError();
+  const ref = panelCredentialRef(panel, ownerId, actorId);
+  const existing = await ref.get();
+  const salt = crypto.randomBytes(24).toString("hex");
+  const now = FieldValue.serverTimestamp();
+  await ref.set({
+    panel,
+    ownerId,
+    actorId,
+    salt,
+    passwordHash: await passwordHash(password, salt),
+    ...(existing.exists ? {} : { createdAt: now }),
+    updatedAt: now,
+  }, { merge: true });
+  return ref;
+}
 async function verifyOrCreatePassword(ownerId, actorId, password, allowCreate) {
   if (!strongPassword(password)) throw passwordError();
-  const ref = db.collection("_panelCredentials").doc(hash(`admin:${ownerId}:${actorId}`)), snap = await ref.get();
+  const ref = panelCredentialRef("admin", ownerId, actorId), snap = await ref.get();
   if (!snap.exists) {
     if (!allowCreate) throw new HttpsError("failed-precondition", "Set password using OTP login first.");
     const salt = crypto.randomBytes(24).toString("hex");
@@ -307,6 +327,19 @@ async function writeInBatches(operations) {
     for (const operation of operations.slice(index, index + 400)) operation(batch);
     await batch.commit();
   }
+}
+
+async function revokeAdminActorSessions(ownerId, actorId, reason, keepUid = "") {
+  const snapshot = await db.collection("_panelSessions").where("ownerId", "==", ownerId).get();
+  const targets = snapshot.docs.filter(document => document.id !== keepUid && document.data().actorId === actorId);
+  const operations = targets.map(document => batch => batch.update(document.ref, {
+    revoked: true,
+    revokedAt: FieldValue.serverTimestamp(),
+    revokeReason: cleanText(reason, 120),
+    expiresAt: Timestamp.fromMillis(0),
+  }));
+  if (operations.length) await writeInBatches(operations);
+  await Promise.all(targets.map(document => getAuth().revokeRefreshTokens(document.id).catch(() => null)));
 }
 
 async function revokeMarketingSessions(ownerId, reason) {
@@ -587,12 +620,31 @@ exports.purgeLegacyPanelSecrets = onCall({ region: REGION, cors: true }, async r
   return { purged: count };
 });
 
+exports.panelSetMasterAdminPassword = onCall({ region: REGION, cors: true }, async request => {
+  const { data: session } = await requireMasterAdmin(request, "Only Master Admin can change the Master Admin password.");
+  const password = String(request.data?.password || "");
+  const owner = await ownerForId(session.ownerId);
+  await setPanelPassword("admin", owner.id, owner.id, password);
+  await revokeAdminActorSessions(owner.id, owner.id, "Master Admin password changed", request.auth.uid);
+  await db.collection("_panelAudit").add({
+    panel: "admin",
+    action: "master_admin_password_changed",
+    targetId: owner.id,
+    actorUid: request.auth.uid,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  return { ok: true };
+});
+
 exports.panelListMarketingHierarchy = onCall({ region: REGION, cors: true }, async request => {
   await requireMarketingAdmin(request);
   const { members, coupons } = await hierarchyDocuments();
   const byId = new Map(members.map(member => [member.id, member]));
+  const credentials = await Promise.all(
+    members.map(member => panelCredentialRef("marketing", member.id, member.id).get()),
+  );
   return {
-    members: members.map(member => ({
+    members: members.map((member, memberIndex) => ({
       id: member.id,
       name: cleanText(member.name, 80),
       mobile: String(member.mobile || ""),
@@ -606,6 +658,8 @@ exports.panelListMarketingHierarchy = onCall({ region: REGION, cors: true }, asy
       ancestorIds: Array.isArray(member.ancestorIds) ? member.ancestorIds.map(String).slice(0, 25) : [],
       commissionPercentage: numericPercentage(member.commissionPercentage),
       uplineBonusPercentage: numericPercentage(member.uplineBonusPercentage === undefined ? 10 : member.uplineBonusPercentage),
+      passwordConfigured: credentials[memberIndex].exists,
+      passwordUpdatedAt: millisOf(credentials[memberIndex].data()?.updatedAt),
       createdAt: millisOf(member.createdAt),
       updatedAt: millisOf(member.updatedAt),
     })),
@@ -716,6 +770,26 @@ exports.panelUpsertMarketingMember = onCall({ region: REGION, cors: true }, asyn
     createdAt: FieldValue.serverTimestamp(),
   });
   return { ok: true, memberId: memberRef.id };
+});
+
+exports.panelSetMarketingMemberPassword = onCall({ region: REGION, cors: true }, async request => {
+  await requireMasterAdmin(request, "Only Master Admin can change a Marketing member password.");
+  const memberId = String(request.data?.memberId || "").trim();
+  const password = String(request.data?.password || "");
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(memberId)) throw new HttpsError("invalid-argument", "Invalid Marketing member ID.");
+  const member = await db.collection("mteam").doc(memberId).get();
+  if (!member.exists) throw new HttpsError("not-found", "Marketing member was not found.");
+
+  await setPanelPassword("marketing", memberId, memberId, password);
+  await revokeMarketingSessions(memberId, "Password changed by Master Admin");
+  await db.collection("_panelAudit").add({
+    panel: "admin",
+    action: "marketing_member_password_changed",
+    targetId: memberId,
+    actorUid: request.auth.uid,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  return { ok: true };
 });
 
 exports.panelDeleteMarketingMember = onCall({ region: REGION, cors: true }, async request => {
