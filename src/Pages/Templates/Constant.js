@@ -32,6 +32,7 @@ export const GENERAL_SELECT_TYPES = [
   { name: "Achievements", value: "Achievements" },
   { name: "Achievements B", value: "Achievements_B" },
   { name: "Income", value: "Income" },
+  { name: "Capping", value: "Capping" },
   { name: "Welcome / Closing", value: "Welcome_Closing" },
   { name: "General Meeting", value: "General_Meeting" },
   { name: "Anniversary & Birthday", value: "Anniversary_Birthday" },
@@ -41,7 +42,6 @@ export const GENERAL_SELECT_TYPES = [
     name: "Thank You (Birthday & Anniversary)",
     value: "ThankYou_Birthday_Anniversary",
   },
-  // { name: "Capping", value: "Capping" },
 ];
 
 export const POSITION_OPTIONS = [
@@ -114,7 +114,6 @@ export const HIDE_BANNER_ID_TYPES = [
   "Today_Trending",
   "ThankYou_Banner_B",
   "ThankYou_Birthday_Anniversary",
-
 ];
 
 /** Types where position selector is HIDDEN */
@@ -149,7 +148,7 @@ export const getFilterOptions = (selType) => {
     return MEETING_FILTER_OPTIONS;
   if (selType === "Welcome_Closing") return WELCOME_CLOSING_FILTER_OPTIONS;
   return DEFAULT_FILTER_OPTIONS;
-}
+};
 
 /** Get SelectType options for a given MainType */
 export const getSelectTypes = (mainType) =>
